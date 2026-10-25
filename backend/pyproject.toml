@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supply-chain-acquisition"
+version = "2.0.1"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "sqlalchemy==2.0.44", "psycopg[binary]==3.2.12", "alembic==1.17.0",
+  "pydantic==2.14.1", "beautifulsoup4==4.14.2", "phonenumbers==9.0.16",
+  "tldextract==5.3.0", "pycountry==24.6.1", "python-dotenv==1.1.1",
+  "openpyxl==3.1.5", "dnspython==2.8.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2", "pytest-cov==7.0.0"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[project.scripts]
+b2b-leads = "app.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

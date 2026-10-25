@@ -1,0 +1,15 @@
+Supply Chain Customer Acquisition — third-party credits
+
+The current Skill core uses the Python dependencies pinned in backend/requirements.lock.
+The former optional Crawl4AI, Google Maps Scraper and Company Research Agent integrations
+are retired and archived with the previous application source; they are not runtime dependencies.
+Historical license texts remain in third_party/licenses/ for attribution continuity:
+
+Crawl4AI (UncleCode), Apache-2.0 with additional attribution requirement:
+https://github.com/unclecode/crawl4ai
+
+Google Maps Scraper (gosom), MIT:
+https://github.com/gosom/google-maps-scraper
+
+Company Research Agent (Guy Hartstein), Apache-2.0:
+architectural research only, not bundled upstream application code.

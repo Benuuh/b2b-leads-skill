@@ -1,0 +1,36 @@
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+.pgpass
+.pgpass.conf
+pgpass.conf
+credentials*.json
+auth*.json
+project.json
+*.pem
+*.key
+*.p12
+*.pfx
+# Runtime, business data, exports, backups and private work folders
+.venv/
+.runtime/
+data/
+artifacts/
+backups/
+/_*/
+*.dump
+*.backup
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+*.xlsx
+*.xls
+# Generated files
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+*.log
+*junit*.xml

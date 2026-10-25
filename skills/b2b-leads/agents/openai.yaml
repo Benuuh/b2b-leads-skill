@@ -1,0 +1,6 @@
+interface:
+  display_name: "B2B 客户研究"
+  short_description: "研究企业及公开商务联系方式，保存进度并交付附来源的中文 Excel 名单"
+  default_prompt: "用 $b2b-leads 找 200 家美国货代，核对官网和公开商务联系方式，并交付中文 Excel。"
+policy:
+  allow_implicit_invocation: true

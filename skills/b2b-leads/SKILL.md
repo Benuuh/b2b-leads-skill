@@ -1,0 +1,39 @@
+---
+name: b2b-leads
+description: Research B2B target companies and their public business contact channels, continue saved acquisition batches, and deliver sourced Chinese Excel lead lists through the local Python acquisition core. Use for requests such as finding freight forwarders, sourcing prospective business customers, or continuing a saved lead research run.
+---
+
+# B2B customer research
+
+Turn the user's customer requirements into a sourced company list. Reuse this project's durable Python core for qualification, channel checks, deduplication, suppression, scoring, progress and export. The Skill is the only entrypoint; commands call the core directly without an HTTP API or login. Do not automatically send outreach, write CRM records, buy sources or ask for a new API key.
+
+## Start or continue
+
+Read [the controller reference](references/controller.md) for commands and candidate evidence shape. Use the checkout's `.venv/Scripts/python.exe` to execute this Skill's `scripts/control.py`. An installed `project.json` selects a verified, frozen Skill/core release while keeping database configuration and business artifacts in the original project. If release verification fails, reinstall or select a verified previous release; do not bypass the failure by calling development code. The controller prepares only PostgreSQL and the isolated Skill schema. Existing DATABASE_URL supplies connection details for a separate sca_skill_v2 database; no account/session file is needed. Never expose database credentials.
+
+- Extract industry, countries, regions, exclusions and requested quantity. Ask one grouped clarification when country or customer definition is missing; otherwise use the project's ordinary public B2B, zero-paid-source defaults. Default quantity is 200, candidate budget 600, cumulative nonpaused run time 8 hours, English source research, Chinese Excel delivery. For another explicit quantity the backend candidate limit is three times that target; read the saved run's limit. Explicit user choices override defaults within supported backend limits.
+- If the user requests exclusion of existing customers, locate the specifically supplied customer file or ask for its location together with any other missing requirements. Read its clearly identified company/domain/email/phone columns and put those observed identifiers into the new spec's `exclusions` before `create`; clarify ambiguous columns rather than guessing. The backend also applies its existing workspace suppression list. Record the customer file hash and exclusion count in the checkpoint, without echoing customer details. Do not claim a customer list was applied when none was supplied or read.
+- Create a new descriptive `--run` once per intentional new request. Record it in conversation. Continue an existing request with exactly the same run; after an interrupted `create`, retry its original spec and run. Do not infer continuation merely from two identical customer goals.
+- Call `prepare`, then `create` from a JSON customer spec. `create` starts the research clock. Inspect `status` before resuming saved work; never resume unrelated batches. Each process command executes a bounded part of this run in its own Python process; no persistent worker is used.
+
+## Research and admit
+
+Use the current Agent's available native internet search and page-open tools. Search broadly enough to find useful directories, associations and official company sites, then open supporting pages. Search snippets are discovery hints, not factual evidence. If tools are unavailable, save a checkpoint and pause; explain the missing capability without inventing results or falling back to a paid provider.
+
+For each candidate establish the company identity, target-country and industry fit. Confirm an official website belongs to this company before attaching it: a matching name alone is insufficient. Use address, operating location, legal name or explicit directory-to-official links; retain an excerpt and source URL supporting that association. Imported website evidence must identify the company and the literal website URL/domain. A shared website domain may represent distinct companies: retain entity evidence and do not merge solely on domain. Leave uncertain identity or website claims unconfirmed. Confirm that the company itself provides the requested service; mentions of its customers, news subjects or explicitly denied services do not establish industry fit.
+
+Open the exact page supporting each public business email, telephone or form. Record a separate field/value observation with source URL, collection time and a short excerpt containing the actual channel value. A top-level email or phone field is an assertion and cannot supply its own evidence. Never infer an email address. Record contact forms only after observing actual email/message inputs; a contact-page URL alone is insufficient. Prefer official public business channels; keep directory origin visible. Publicly available does not mean deliverable or independently verified.
+
+Append at most 20 candidates per chunk with stable chunk IDs and a useful checkpoint (searched sources/queries, processed URLs, unresolved identities and next queries). Record native search/open call counts only when actually observed; use null for unknown values. These counts are separate from backend HTTP observations and cannot be substituted for network request counts. After each chunk run `process`, read the backend's quality results and adapt further research to the shortfall. Do not re-fetch completed companies automatically or pad the list with duplicates or unsupported contacts.
+
+## Pause, finish and deliver
+
+`status --action pause` preserves a run across breaks and stops the cumulative clock; resume only this requested run with `process --resume`. Save the checkpoint before pausing when possible. Committed operations are recorded with their input hashes in PostgreSQL; retry the original input, run and chunk/operation key after interruption rather than creating a new batch. Before starting the next chunk, inspect time and candidate budget. At the saved time/candidate limit or contactable target (defaults: 8 hours, 600 candidates, 200 companies), stop discovery and report the observed outcome.
+
+Use `finish` to close further input while retaining queued work. Continue bounded `process` calls until completed/partial or explicitly paused. Export after processing using default `xlsx`, `balanced`, `zh`: the workbook contains four tables with Chinese column headers. CSV is optional on request. Only matched, unsuppressed, deduplicated companies with at least one sufficiently sourced business channel count toward delivery. The core export and completion calculation share this policy. The core may make bounded official-site requests to confirm eligibility and supplement channels; preserve the Agent evidence and report backend HTTP observations separately.
+
+Return the local Excel link and quality report with discovered, matched, contactable, excluded, uncertain, evidence-missing and shortfall counts. State that public channels have source evidence but actual delivery has not been tested. If fewer than requested qualify, deliver the available results and name the remaining gap; do not claim the full batch or an 8-hour service level was proven. A small live smoke test is distinct from independent human quality acceptance or a completed 200-company run.
+
+## Saved runs and administration
+
+Use `list` to find a specifically requested saved run and `status` to inspect it. `suppressions list/add/remove`, `delete-company`, and `maintenance` provide the former workbench administration; use changes only within the user's request. Automatic retention runs on a database-backed throttle during commands. Legacy runs are archived separately and cannot be resumed in the new database.

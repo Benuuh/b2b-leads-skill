@@ -1,0 +1,53 @@
+# Skill 核心操作手册
+
+## 配置与启动
+
+Python 3.12；安装 backend/requirements.lock 和 editable backend。新机器配置 `.env` 的 `SCA_DATABASE_URL`，参见 `.env.example`。`SCA_ARTIFACT_ROOT` 可覆盖默认 `data/skill-v2`。`SCA_FIXTURE_MODE=true` 仅用于合成演示，禁止正式导出。无需 SESSION_SECRET、服务 token、账号或登录文件。
+
+安装器将 Skill、核心源码、迁移和依赖锁冻结到 `.runtime/skill-releases/<release_id>`，不复制 `.env` 或业务数据。已安装 Skill 必须通过自身 `scripts/control.py` 执行；该入口校验发布及 Skill 文件后加载冻结代码。修改 checkout 不会改变当前安装版本。执行 `scripts/install-b2b-leads.ps1` 激活新发布；使用 `-Release <已保留的 release_id>` 重新激活旧发布。开发时直接执行 `scripts/b2b_leads.py` 使用当前 checkout，其发布标识为 development。
+
+安装与回退只选择代码，不降级数据库。升级前备份，已知 `skill_v2_001` 基线可由 prepare 增量升级；不覆盖未知数据库。旧代码若不支持当前 schema，使用对应独立恢复库及文件目录，不能只回退 Skill 文件。
+
+Windows 本地部署可将 PostgreSQL 二进制放在 `.runtime/pgsql/bin`、数据目录放在 `.runtime/pgdata`。prepare 连接失败时只尝试启动这个既有实例；不下载软件或终止占用端口的进程。外部 PostgreSQL 由操作者启动。新业务库创建需要权限。
+
+```powershell
+.\.venv\Scripts\python.exe scripts/b2b_leads.py prepare
+.\.venv\Scripts\python.exe scripts/b2b_leads.py create --run us-forwarders-01 --spec-json .runtime/spec.json
+.\.venv\Scripts\python.exe scripts/b2b_leads.py append --run us-forwarders-01 --chunk round-01 --input-json .runtime/round-01.json
+.\.venv\Scripts\python.exe scripts/b2b_leads.py process --run us-forwarders-01 --max-jobs 20 --max-seconds 60 --operation-key process-round-01
+.\.venv\Scripts\python.exe scripts/b2b_leads.py status --run us-forwarders-01 --action pause
+.\.venv\Scripts\python.exe scripts/b2b_leads.py process --run us-forwarders-01 --resume
+.\.venv\Scripts\python.exe scripts/b2b_leads.py finish --run us-forwarders-01
+.\.venv\Scripts\python.exe scripts/b2b_leads.py export --run us-forwarders-01
+```
+
+输入形状和证据要求见 [Skill 控制参考](../skills/b2b-leads/references/controller.md)。seconds 上限在企业任务之间检查；正在执行的有限任务可能跨过该时间。任务异常最多重试三次，等待退避后再 process，或对终态失败执行 status --action retry。
+
+## 管理命令
+
+```powershell
+.\.venv\Scripts\python.exe scripts/b2b_leads.py list
+.\.venv\Scripts\python.exe scripts/b2b_leads.py suppressions list
+.\.venv\Scripts\python.exe scripts/b2b_leads.py suppressions add --type domain --value example.com --reason 已有客户
+.\.venv\Scripts\python.exe scripts/b2b_leads.py suppressions remove --id <suppression-id>
+.\.venv\Scripts\python.exe scripts/b2b_leads.py delete-company --id <company-id>
+.\.venv\Scripts\python.exe scripts/b2b_leads.py maintenance
+.\.venv\Scripts\python.exe scripts/b2b_leads.py maintenance --apply
+```
+
+status --action 支持 pause/resume/cancel/retry。取消和删除按明确用户指令执行；Skill 不在普通研究中自动删除记录。抑制和删除会撤销当前系统中的相关导出，已复制到系统外的文件由持有人管理。
+
+默认原始快照、导出、操作审计保留 30 天，企业及终态任务输入 365 天；B2B_RAW_RETENTION_DAYS / B2B_EXPORT_RETENTION_DAYS / B2B_LOG_RETENTION_DAYS / B2B_CONTACT_RETENTION_DAYS 可覆盖。备份有独立保留周期。
+
+## 备份恢复
+
+```powershell
+.\.venv\Scripts\python.exe scripts/backup_restore.py backup --output .runtime/backups/skill-01
+.\.venv\Scripts\python.exe scripts/backup_restore.py restore --source .runtime/backups/skill-01 --target-database sca_skill_restore_01 --target-artifacts .runtime/restored-skill-01
+```
+
+备份使用 PostgreSQL 一致性快照，包含引用的原始页面、导出和报告；恢复只能使用不存在的新库和新目录，并核对表数据哈希和文件哈希。恢复后将 SCA_DATABASE_URL 与 SCA_ARTIFACT_ROOT 一起切换。备份目录可能包含真实业务联系人，不纳入 Git。
+
+新版本不续做旧库批次，不重置旧库。回退时使用已验证的代码版本及其兼容的独立数据库/文件备份，数据库与文件目录必须一起切换。
+
+处理中断的页面消耗按持久请求观测保守恢复。若无法确定消耗或在执行中暂停，会预留该企业剩余页面额度，该企业可能以 INTERRUPTED_PAGE_BUDGET 结束；其他排队企业仍可继续。优先在企业处理命令结束后暂停。
