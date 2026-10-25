@@ -107,6 +107,12 @@ def dispatch(args):
 
 
 def main(argv=None):
+    # Machine-readable JSON and Chinese argparse text use one encoding even on
+    # Windows hosts whose inherited console/pipe encoding is cp1252.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if callable(reconfigure):
+            reconfigure(encoding='utf-8')
     values = list(sys.argv[1:] if argv is None else argv)
     if any(value == "--url" or value.startswith("--url=") for value in values):
         print(json.dumps({"error": {"code": "REMOVED_OPTION", "message": "--url 已移除；Skill 现直接调用 Python 核心，无需 API 地址"}}, ensure_ascii=False))

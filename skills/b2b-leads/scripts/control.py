@@ -4,6 +4,10 @@ import sys
 # Python normally searches this writable scripts directory before the standard
 # library. Remove it before importing even the verifier's own dependencies.
 sys.path[:] = [entry for entry in sys.path[1:] if entry]
+for stream in (sys.stdout, sys.stderr):
+    reconfigure = getattr(stream, 'reconfigure', None)
+    if callable(reconfigure):
+        reconfigure(encoding='utf-8')
 import hashlib
 import json
 from pathlib import Path

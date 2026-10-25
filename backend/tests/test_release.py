@@ -34,9 +34,10 @@ def project(tmp_path):
     return root
 
 
-def command(destination):
+def command(destination, env_updates=None):
     env = dict(os.environ)
     env.pop("SCA_PROJECT_ROOT", None)
+    env.update(env_updates or {})
     return subprocess.run([sys.executable, str(destination / "scripts" / "control.py"), "--help"],
                           capture_output=True, env=env, timeout=30)
 
@@ -129,6 +130,31 @@ def test_wrapper_rejects_other_project_release_and_malformed_inventory(tmp_path)
     result = command(destination)
     assert result.returncode == 1
     assert json.loads(result.stdout)['error']['code'] == 'RELEASE_INTEGRITY_ERROR'
+
+
+def test_wrapper_integrity_error_is_utf8_with_cp1252_inherited_pipes(tmp_path):
+    root, destination = project(tmp_path), tmp_path / 'installed'
+    release.install(root, destination)
+    marker = json.loads((destination / 'project.json').read_text(encoding='utf-8'))
+    (Path(marker['release_root']) / 'release.json').write_text('{"files":[]}', encoding='utf-8')
+    result = command(destination, {'PYTHONIOENCODING': 'cp1252', 'PYTHONUTF8': '0'})
+    assert result.returncode == 1, result.stderr.decode('utf-8')
+    error = json.loads(result.stdout.decode('utf-8'))['error']
+    assert error['code'] == 'RELEASE_INTEGRITY_ERROR'
+    assert '与核心发布不一致' in error['message']
+    assert result.stderr == b''
+
+
+def test_release_installer_failure_is_utf8_with_cp1252_inherited_pipes(tmp_path):
+    env = {**os.environ, 'PYTHONIOENCODING': 'cp1252', 'PYTHONUTF8': '0'}
+    result = subprocess.run([sys.executable, str(ROOT / 'scripts/skill_release.py'),
+        '--root', str(tmp_path / 'missing-source'), '--destination', str(tmp_path / 'installed')],
+        capture_output=True, env=env, timeout=30)
+    assert result.returncode == 1, result.stderr.decode('utf-8')
+    error = json.loads(result.stdout.decode('utf-8'))['error']
+    assert error['code'] == 'RELEASE_INSTALL_FAILED'
+    assert '安装未完成' in error['message']
+    assert result.stderr == b''
 
 
 def test_installed_shadow_module_cannot_run_before_verification(tmp_path):
