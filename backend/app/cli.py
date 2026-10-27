@@ -7,7 +7,7 @@ import sys
 from pydantic import ValidationError
 
 from app.errors import AppError
-from app.schemas import ResearchInput, SegmentSpec, SuppressionInput
+from app.schemas import ResearchInput, SuppressionInput
 
 
 def read_json(path):
@@ -26,22 +26,38 @@ def parser():
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("prepare")
     commands.add_parser("list", help="列出已保存批次")
-    for command in ("create", "append", "process", "status", "finish", "export"):
+    commands.add_parser("capabilities", help="离线读取支持的配置版本、字段、运算符与限额")
+    validate = commands.add_parser("validate-input", help="离线逐条预检候选，不写库、不联网")
+    validate.add_argument("--spec-json", required=True, type=Path)
+    validate.add_argument("--input-json", required=True, type=Path)
+    for command in ("create", "append", "process", "status", "finish", "export", "reassess",
+                    "extend-research", "supplement", "advance"):
         sub = commands.add_parser(command)
         sub.add_argument("--run", required=True)
         if command == "create":
             sub.add_argument("--spec-json", required=True, type=Path)
-        if command in {"append", "finish"}:
-            sub.add_argument("--input-json", required=command == "append", type=Path)
-        if command == "append":
+        if command in {"append", "finish", "advance"}:
+            sub.add_argument("--input-json", required=command in {"append", "advance"}, type=Path)
+        if command in {"append", "advance"}:
             sub.add_argument("--chunk", help="同一批输入重试必须使用相同 chunk；默认使用内容哈希")
-        if command in {"process", "finish"}:
+        if command in {"process", "finish", "advance"}:
             sub.add_argument("--max-jobs", type=int, default=20)
             sub.add_argument("--max-seconds", type=int, default=60)
             sub.add_argument("--resume", action="store_true")
             sub.add_argument("--operation-key", help="显式重放同一次处理调用")
+            sub.add_argument("--workers", type=int, help="受支持版本的有界并发研究 worker 数（1-4）")
         if command == "status":
             sub.add_argument("--action", choices=("pause", "resume", "cancel", "retry"))
+        if command == "reassess":
+            sub.add_argument("--company-id", action="append", required=True, help="保存证据重评；可重复，最多 20 家")
+            sub.add_argument("--operation-key", required=True, help="显式重放同一次保存证据重评")
+        if command == "supplement":
+            sub.add_argument("--company-id", required=True, help="为已保留企业追加增量证据")
+            sub.add_argument("--input-json", required=True, type=Path)
+            sub.add_argument("--operation-key", required=True, help="显式重放同一次增量补证")
+        if command == "extend-research":
+            sub.add_argument("--hours", type=int, required=True, help="新的累计研究时限（小时），只能增加，最多 72 小时")
+            sub.add_argument("--operation-key", required=True, help="显式重放同一次时限延长")
         if command == "export":
             sub.add_argument("--format", choices=("xlsx", "csv"), default="xlsx")
             sub.add_argument("--export-key", help="保留具名导出快照")
@@ -63,8 +79,13 @@ def parser():
 
 def dispatch(args):
     from app import runs
-    from app.runtime import prepare
 
+    if args.command == "capabilities":
+        from app.capabilities import capabilities
+        return capabilities()
+    if args.command == "validate-input":
+        return runs.validate_input(read_json(args.spec_json), read_json(args.input_json))
+    from app.runtime import prepare
     prepared = prepare()
     # Replaces the retired worker's periodic retention. The service throttles
     # this maintenance; manual maintenance remains an explicit preview/apply.
@@ -75,16 +96,26 @@ def dispatch(args):
     if args.command == "list":
         return {"items": runs.list_runs()}
     if args.command == "create":
-        spec = SegmentSpec.model_validate(read_json(args.spec_json)).model_dump()
-        return runs.create(args.run, spec)
+        return runs.create(args.run, read_json(args.spec_json))
     if args.command == "append":
         body = ResearchInput.model_validate(read_json(args.input_json)).model_dump()
         return runs.append(args.run, chunk_id=args.chunk, **body)
+    if args.command == "advance":
+        return runs.advance(args.run, read_json(args.input_json), chunk_id=args.chunk,
+                            max_jobs=args.max_jobs, max_seconds=args.max_seconds,
+                            workers=args.workers, resume=args.resume)
     if args.command == "status":
         return runs.status(args.run, action=args.action)
+    if args.command == "reassess":
+        return runs.reassess(args.run, company_ids=args.company_id, operation_key=args.operation_key)
+    if args.command == "supplement":
+        return runs.supplement(args.run, args.company_id, read_json(args.input_json),
+                               operation_key=args.operation_key)
+    if args.command == "extend-research":
+        return runs.extend_research(args.run, hours=args.hours, operation_key=args.operation_key)
     if args.command in {"process", "finish"}:
         options = dict(max_jobs=args.max_jobs, max_seconds=args.max_seconds,
-                       resume=args.resume, operation_key=args.operation_key)
+                       resume=args.resume, operation_key=args.operation_key, workers=args.workers)
         if args.command == "process":
             return runs.process(args.run, **options)
         body = ResearchInput.model_validate(read_json(args.input_json) if args.input_json else {}).model_dump()

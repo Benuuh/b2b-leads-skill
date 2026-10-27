@@ -62,13 +62,15 @@ def _field_list(name, defaults, fields):
 
 def build_export(companies: list, manifest: dict, *, format="xlsx", mode="balanced", filters=None,
                  fields=None, language="en", suppressions=None, metrics_context=None, now=None,
-                 delivery_only=False, delivery_limit=None) -> tuple[bytes, str, str, dict]:
+                 delivery_only=False, delivery_limit=None, policy=None,
+                 identity_version="legacy") -> tuple[bytes, str, str, dict]:
     if manifest.get("demo_only") or any(company.get("demo_only") for company in companies):
         raise ValueError("演示批次不能作为正式获客名单导出")
     current = now or (metrics_context or {}).get("as_of") or manifest.get("generated_at") or datetime.now(timezone.utc)
     selected, eligible_delivery = select_export_companies(companies, mode=mode, filters=filters,
         suppressions=suppressions, freshness_days=manifest.get("freshness_days", 180), now=current,
-        delivery_only=delivery_only, delivery_limit=delivery_limit)
+        delivery_only=delivery_only, delivery_limit=delivery_limit, policy=policy,
+        identity_version=identity_version)
     if format not in {"xlsx", "csv", "zip"}:
         raise ValueError("Export format must be xlsx or csv")
     headers = HEADERS_ZH if language.lower().startswith("zh") else {}

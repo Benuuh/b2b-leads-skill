@@ -28,7 +28,10 @@ def _start_workspace_postgres(url):
         return False
     result = subprocess.run(
         [str(binary), "-D", str(data), "-l", str(ROOT / ".runtime" / "postgres.log"), "start", "-w"],
-        capture_output=True, timeout=60, **flags,
+        # PostgreSQL can retain pg_ctl's pipe handles after pg_ctl exits.
+        # File handles let this command finish while the database keeps running.
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, timeout=60, **flags,
     )
     return result.returncode == 0
 

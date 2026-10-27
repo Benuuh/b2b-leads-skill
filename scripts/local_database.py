@@ -48,7 +48,8 @@ def main():
             command += ["stop", "-m", "fast", "-w"]
         else:
             command += ["status"]
-        result = subprocess.run(command, capture_output=True, **flags)
+        result = subprocess.run(command, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **flags)
         if result.returncode:
             print(json.dumps({"status": "unavailable", "action": args.action}))
             return result.returncode

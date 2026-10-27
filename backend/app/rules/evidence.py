@@ -10,6 +10,7 @@ import re
 from urllib.parse import unquote, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
+from app.web.parsing import parsed_html
 import phonenumbers
 
 
@@ -17,7 +18,10 @@ UNOBSERVED_TYPES = {'inferred', 'search', 'search_snippet', 'search_result', 'se
 
 
 def _name(value):
-    return re.sub(r'[\W_]+', '', str(value or '').casefold())
+    parts = re.findall(r'\w+', str(value or '').casefold())
+    while len(parts) > 1 and parts[-1] in {'inc', 'incorporated', 'llc', 'corp', 'corporation', 'ltd', 'limited'}:
+        parts.pop()
+    return ''.join(parts)
 
 
 def _host(value):
@@ -28,10 +32,10 @@ def _host(value):
 
 
 def company_name_pattern(name):
-    """Keep ordinary legal-suffix punctuation from changing the subject."""
+    """Match a legal name with or without its ordinary corporate suffix."""
     name = str(name or '').strip()
     words = list(re.finditer(r'\w+', name))
-    suffixes = {'inc', 'co', 'corp', 'ltd', 'llc', 'plc'}
+    suffixes = {'inc', 'incorporated', 'co', 'corp', 'corporation', 'ltd', 'limited', 'llc', 'plc'}
     suffix = len(words)
     while suffix and words[suffix - 1].group().casefold() in suffixes:
         suffix -= 1
@@ -39,7 +43,7 @@ def company_name_pattern(name):
         base = name[:words[suffix].start()].rstrip(' ,.')
         separator = r'(?:\s*,\s*|\s+)'
         legal = separator.join(re.escape(word.group()) + r'\.?' for word in words[suffix:])
-        return re.escape(base).replace(r'\ ', r'\s+') + separator + legal
+        return re.escape(base).replace(r'\ ', r'\s+') + r'(?:' + separator + legal + r')?'
     return re.escape(name).replace(r'\ ', r'\s+')
 
 
@@ -190,7 +194,7 @@ def website_identity(candidate, pages=(), *, now=None):
         url = page.get('final_url') or page.get('url')
         if _host(url) != own_host:
             continue
-        soup = BeautifulSoup(page.get('html') or '', 'html.parser')
+        soup = parsed_html(page.get('html') or '')
         names = [tag.get('content') for tag in soup.select('meta[property="og:site_name"]') if tag.get('content')]
         heading_match = any(_name(tag.get_text(' ', strip=True)) == _name(name) for tag in soup.select('h1'))
         for script in soup.select('script[type="application/ld+json"]'):

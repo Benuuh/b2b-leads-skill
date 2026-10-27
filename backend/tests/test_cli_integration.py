@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from app.config import ROOT, settings
+from app import __version__
 
 
 def test_direct_commands_resume_and_export_chinese_excel(clean_db, tmp_path):
@@ -52,7 +53,7 @@ def test_direct_commands_resume_and_export_chinese_excel(clean_db, tmp_path):
     assert workbook.sheetnames == ["Companies", "Contacts", "Sources", "Manifest"]
     assert "企业名称" in next(workbook["Companies"].values)
     assert "来源原文摘录" in next(workbook["Sources"].values)
-    assert result['manifest']['runtime_release']['core_version'] == '2.0.1'
+    assert result['manifest']['runtime_release']['core_version'] == __version__
     assert command("list")["items"][0]["run_id"] == "cli-fixture"
     suppression = command("suppressions", "add", "--type", "company", "--value", candidate["company_name"])
     assert command("status", "--run", "cli-fixture")["summary"]["contactable"] == 0
@@ -61,3 +62,24 @@ def test_direct_commands_resume_and_export_chinese_excel(clean_db, tmp_path):
     refreshed = command("export", "--run", "cli-fixture", "--format", "csv")
     assert refreshed["summary"]["contactable"] == 1
     command("maintenance")
+
+
+def test_advance_command_keeps_chunk_and_processing_replay(
+        clean_db, tmp_path, packaging_spec, packaging_candidate):
+    env = {**os.environ, 'SCA_DATABASE_URL': settings.database_url,
+           'SCA_ARTIFACT_ROOT': str(settings.artifact_root), 'SCA_FIXTURE_MODE': 'false'}
+    def command(*args):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/b2b_leads.py'), *args],
+                                env=env, cwd=ROOT, capture_output=True, timeout=60)
+        assert result.returncode == 0, result.stdout.decode('utf-8', errors='replace')
+        return json.loads(result.stdout)
+    spec = tmp_path / 'spec.json'
+    chunk = tmp_path / 'chunk.json'
+    spec.write_text(json.dumps(packaging_spec), encoding='utf-8')
+    chunk.write_text(json.dumps({'candidates': [packaging_candidate]}), encoding='utf-8')
+    command('create', '--run', 'cli-advance', '--spec-json', str(spec))
+    first = command('advance', '--run', 'cli-advance', '--chunk', 'first', '--input-json', str(chunk))
+    assert first['advanced'] and first['summary']['contactable'] == 1
+    assert first['admission']['accepted'] == first['processed_jobs'] == 1
+    assert 'segment' not in first and 'plan' not in first
+    assert command('advance', '--run', 'cli-advance', '--chunk', 'first', '--input-json', str(chunk)) == first

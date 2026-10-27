@@ -3,7 +3,7 @@ import threading
 
 import pytest
 from sqlalchemy import select
-from app import runs
+from app import runs, __version__
 from app.errors import AppError
 from app.persistence import transaction, utcnow
 from app.persistence.models import Run, Job, Company, Operation, Export, MaintenanceState, Observation
@@ -51,7 +51,7 @@ def test_run_records_execution_release(clean_db):
     from app.persistence import SCHEMA_REVISION
     run = runs.create('versioned', SPEC)
     assert run['plan']['release']['schema_revision'] == SCHEMA_REVISION
-    assert run['plan']['release']['core_version'] == '2.0.1'
+    assert run['plan']['release']['core_version'] == __version__
 
 
 def test_chunk_replay_hash_and_version(clean_db):

@@ -2,18 +2,14 @@
 from urllib.parse import unquote, urljoin, urlsplit
 from bs4 import BeautifulSoup
 from .security import normalize_url
+from .parsing import parsed_html
 
 LINK_WORDS = ('about', 'product', 'service', 'contact', 'team', 'company', 'unternehmen', 'kontakt',
               'produkte', 'servicios', 'nosotros', 'contacto', '关于', '联系', '产品', '服务', '会社', 'お問い合わせ')
 
 
 def clean_html(html: str) -> BeautifulSoup:
-    soup = BeautifulSoup(html, 'html.parser')
-    for node in soup(['script', 'style', 'noscript', 'iframe', 'template', 'svg', 'form']):
-        node.decompose()
-    for node in soup.select('[hidden], [aria-hidden="true"]'):
-        node.decompose()
-    return soup
+    return parsed_html(html, remove=('script', 'style', 'noscript', 'iframe', 'template', 'svg', 'form'), hidden=True)
 
 
 def page_content(html: str, url: str, allowed_hosts: tuple[str, ...], *, fixture=False) -> tuple[str, list[str], list[str]]:

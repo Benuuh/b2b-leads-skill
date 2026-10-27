@@ -14,6 +14,7 @@ from urllib.parse import unquote
 from ..rules.contacts import is_contact_form_fields, normalize_domain, validate_email, validate_phone
 from ..rules.ranking import rank_contacts, score_company
 from ..rules.evidence import literal_value, website_identity, subject_excerpt
+from ..rules.identity import display_identity
 from .fields import EMAIL_CHANNEL_FIELDS
 
 
@@ -74,8 +75,9 @@ def eligibility(company):
     return "unevaluated", "unevaluated"
 
 
-def qualification_cohort(rows):
-    return [row for row in coalesce_companies(rows) if eligibility(row)[0] == "qualified"]
+def qualification_cohort(rows, identity_version="legacy"):
+    return [row for row in coalesce_companies(rows, identity_version=identity_version)
+            if eligibility(row)[0] == "qualified"]
 
 
 
@@ -128,15 +130,12 @@ def _safe_number(value):
         return 0
 
 
-def _identity(company):
+def _identity(company, version="legacy"):
     """Sharing a domain does not establish a shared legal entity or branch."""
-    domain = normalize_domain(company.get("domain") or company.get("website_url") or "")
-    return (domain,
-            normalize_name(company.get("company_name")), str(company.get("country_code") or "").upper(),
-            str(company.get("branch_id") or company.get("branch_name") or company.get("location_id") or (normalize_name(company.get("address")) if not domain else "")))
+    return display_identity(company, version=version)
 
 
-def ownership_order(companies):
+def ownership_order(companies, identity_version="legacy"):
     """A cohort uses one frozen policy, including when historical ordinals lack."""
     values = list(companies)
     use_ordinal = bool(values) and all(isinstance(company.get("candidate_ordinal"), int)
@@ -150,17 +149,17 @@ def ownership_order(companies):
                 position = created.replace(tzinfo=created.tzinfo or timezone.utc).astimezone(timezone.utc)
             except (TypeError, ValueError):
                 position = datetime.min.replace(tzinfo=timezone.utc)
-        return position, str(company.get("company_id") or ""), normalize_name(company.get("company_name")), _identity(company)
+        return position, str(company.get("company_id") or ""), normalize_name(company.get("company_name")), _identity(company, identity_version)
     return sorted(values, key=order)
 
 
-def coalesce_companies(companies):
+def coalesce_companies(companies, identity_version="legacy"):
     merged = {}
     # Deterministic ownership of duplicated channels and merged entity IDs.
-    for original in ownership_order(companies):
+    for original in ownership_order(companies, identity_version=identity_version):
         item = deepcopy(original)
         item["contacts"] = rank_contacts(item.get("contacts"))
-        identity = _identity(item)
+        identity = _identity(item, identity_version)
         if identity not in merged:
             merged[identity] = item
             continue
@@ -241,7 +240,8 @@ def redact_qualification(company, original, permitted_emails, permitted_phones, 
             company[field] = ({} if field == 'qualification' else []) if cleaned is removed else cleaned
 
 
-def filter_companies(companies, *, mode="balanced", filters=None, suppressions=None, freshness_days=180, now=None):
+def filter_companies(companies, *, mode="balanced", filters=None, suppressions=None, freshness_days=180,
+                     now=None, identity_version="legacy"):
     """Return a detached, deduplicated export view, including only permitted facts.
 
     Domain/company suppressions remove a whole company; email/phone suppressions
@@ -256,7 +256,7 @@ def filter_companies(companies, *, mode="balanced", filters=None, suppressions=N
     suppressed = suppression_sets(suppressions)
     seen_companies, seen_emails, seen_phones = set(), set(), set()
     result = []
-    coalesced = coalesce_companies(companies)
+    coalesced = coalesce_companies(companies, identity_version=identity_version)
     # Freeze channel ownership before quality, contact, score and presence
     # filters. An output predicate must never transfer a channel to a different
     # enterprise. Enterprise attributes may deliberately define a sub-cohort.
@@ -314,7 +314,7 @@ def filter_companies(companies, *, mode="balanced", filters=None, suppressions=N
             continue
         if not matches(company.get("status"), filters.get("status")):
             continue
-        identity = _identity(company)
+        identity = _identity(company, identity_version)
         if identity in seen_companies:
             continue
         contacts = []
@@ -581,7 +581,85 @@ def _form_evidence(company, current, days):
         and _bound_source(company, url, row) for row in company.get("sources") or [])
 
 
-def delivery_companies(companies, *, suppressions=None, freshness_days=180, now=None) -> list:
+def channel_status(company, policy=None, *, suppressions=None, freshness_days=180, now=None):
+    """Read-only channel-policy decision for one enterprise record.
+
+    A channel counts only when it has its own fresh, subject-bound observation.
+    ``mode=all`` requires every listed type; ``named_person_required`` requires a
+    named direct business contact among those channels.
+    """
+    from .policy import normalize_channel_policy
+    policy = normalize_channel_policy(policy)
+    current = observation_time(now) if now is not None else datetime.now(timezone.utc)
+    days = int(freshness_days)
+    item = next((row for row in filter_companies([deepcopy(company)], mode="max_coverage",
+                suppressions=suppressions, freshness_days=days, now=current)
+                if row.get("company_id") == company.get("company_id")), None)
+    if item is None:
+        return {"satisfied": False, "present": [], "missing": list(policy["allowed_types"]) + (
+            ["named_person"] if policy["named_person_required"] else []),
+            "policy": policy, "reason": "suppressed_or_unavailable"}
+    contacts, form = _usable_channels(item, current, days)
+    present = []
+    if any(contact.get("email") for contact in contacts):
+        present.append("business_email")
+    if any(contact.get("phone") for contact in contacts):
+        present.append("business_phone")
+    if form:
+        present.append("contact_form")
+    allowed = [name for name in policy["allowed_types"]]
+    absent = [name for name in allowed if name not in present]
+    named = [contact for contact in contacts if contact.get("contact_name")
+             and contact.get("contact_priority") == "direct_business"]
+    roles = [str(role).casefold() for role in policy.get("required_roles") or []]
+    if roles:
+        named = [contact for contact in named
+                 if any(role in str(contact.get("title") or "").casefold() for role in roles)]
+    named_ok = bool(named)
+    if policy["mode"] == "all":
+        missing = list(absent)
+        satisfied = not missing
+    else:
+        satisfied = bool([name for name in present if name in allowed])
+        missing = absent if not satisfied else []
+    if policy["named_person_required"] and not named_ok:
+        satisfied = False
+        if "named_person" not in missing:
+            missing.append("named_person")
+    return {"satisfied": bool(satisfied), "present": [name for name in present if name in allowed],
+            "missing": missing, "named_person": named_ok, "policy": policy,
+            "reason": "channel_policy_satisfied" if satisfied else "channel_policy_missing"}
+
+
+def _usable_channels(company, current, days):
+    """Return contacts with only fresh, observed, subject-bound channels."""
+    contacts = []
+    for contact in company.get("contacts") or []:
+        email = contact.get("email")
+        email_valid = bool(email and contact.get("email_status") in {None, "", "unverified", "unknown", "verified"}
+            and contact.get("mx_status") in {None, "", "valid", "unknown", "not_checked"}
+            and contact.get("syntax_status") in {None, "", "valid", "unknown", "not_checked"}
+            and contact.get("disposable_status") not in {"disposable", "yes", "true"}
+            and validate_email(email, mx_lookup=lambda _: "not_checked")["syntax_status"] == "valid"
+            and _channel_evidence(company, contact, "email", email, current, days))
+        phone = contact.get("phone")
+        phone_valid = bool(phone and contact.get("phone_status") == "valid"
+            and validate_phone(phone, company.get("country_code"))["phone_status"] == "valid"
+            and _channel_evidence(company, contact, "phone", phone, current, days))
+        if not email_valid:
+            for field in EMAIL_CHANNEL_FIELDS:
+                contact[field] = None
+        if not phone_valid:
+            for field in PHONE_FIELDS:
+                contact[field] = None
+        if email_valid or phone_valid:
+            contacts.append(contact)
+    form = bool(company.get("contact_form_url")) and _form_evidence(company, current, days)
+    return contacts, form
+
+
+def delivery_companies(companies, *, suppressions=None, freshness_days=180, now=None, policy=None,
+                       identity_version="legacy") -> list:
     """Detached, ranked qualified enterprises with a fresh public channel.
 
     Balanced export selection freezes existing deduplication/channel ownership
@@ -594,52 +672,44 @@ def delivery_companies(companies, *, suppressions=None, freshness_days=180, now=
     if days < 0:
         raise ValueError("freshness_days cannot be negative")
     selected = filter_companies(companies, mode="balanced", suppressions=suppressions,
-                                freshness_days=days, now=current)
+                                freshness_days=days, now=current, identity_version=identity_version)
     result = []
     form_owners = {}
-    for item in ownership_order(selected):
+    for item in ownership_order(selected, identity_version=identity_version):
         if item.get("contact_form_url"):
             form_owners.setdefault(item["contact_form_url"], item.get("company_id"))
-    for company in qualification_cohort(selected):
+    for company in qualification_cohort(selected, identity_version=identity_version):
         if company.get("status") == "excluded" or _website_ambiguous(company):
             continue
         original = deepcopy(company)
-        contacts = []
-        for contact in company.get("contacts") or []:
-            email = contact.get("email")
-            email_valid = bool(email and contact.get("email_status") in {None, "", "unverified", "unknown", "verified"}
-                and contact.get("mx_status") in {None, "", "valid", "unknown", "not_checked"}
-                and contact.get("syntax_status") in {None, "", "valid", "unknown", "not_checked"}
-                and contact.get("disposable_status") not in {"disposable", "yes", "true"}
-                and validate_email(email, mx_lookup=lambda _: "not_checked")["syntax_status"] == "valid"
-                and _channel_evidence(company, contact, "email", email, current, days))
-            phone = contact.get("phone")
-            phone_valid = bool(phone and contact.get("phone_status") == "valid"
-                and validate_phone(phone, company.get("country_code"))["phone_status"] == "valid"
-                and _channel_evidence(company, contact, "phone", phone, current, days))
-            if not email_valid:
-                for field in EMAIL_CHANNEL_FIELDS:
-                    contact[field] = None
-            if not phone_valid:
-                for field in PHONE_FIELDS:
-                    contact[field] = None
-            if email_valid or phone_valid:
-                contacts.append(contact)
+        contacts, form = _usable_channels(company, current, days)
         company["contacts"] = contacts
-        form = company.get("contact_form_url")
-        if not _form_evidence(company, current, days) or form_owners.get(form) != company.get("company_id"):
+        if not form or form_owners.get(company.get("contact_form_url")) != company.get("company_id"):
             company["contact_form_url"] = None
         if not contacts and not company.get("contact_form_url"):
             continue
+        if policy is not None:
+            from .policy import normalize_channel_policy
+            normalized = normalize_channel_policy(policy)
+            status = channel_status(company, normalized, freshness_days=days, now=current)
+            if not status["satisfied"]:
+                continue
+            company["channel_policy"] = status
         redact_qualification(company, original, {contact["email"] for contact in contacts if contact.get("email")},
             {contact["phone"] for contact in contacts if contact.get("phone")}, suppression_sets(suppressions))
         # Rebuild sources and aggregates after channel removal using the same
         # export redaction logic. A form-only enterprise survives balanced mode.
-        clean = filter_companies([company], mode="balanced", freshness_days=days, now=current)[0]
+        clean = filter_companies([company], mode="balanced", freshness_days=days, now=current,
+                                 identity_version=identity_version)[0]
         clean["contactable"] = True
         clean["delivery_channels"] = (["email"] if clean.get("email_count") else []) + (
             ["phone"] if clean.get("phone_count") else []) + (["contact_form"] if clean.get("contact_form_url") else [])
         clean["delivery_policy_version"] = DELIVERY_POLICY_VERSION
+        if policy is not None:
+            from .policy import legacy_channels, normalize_channel_policy
+            clean["channel_policy"] = channel_status(clean, normalize_channel_policy(policy),
+                freshness_days=days, now=current)
+            clean["delivery_channels"] = legacy_channels(clean["channel_policy"]["present"])
         for row in clean.get("sources") or []:
             if row.get("entity_id") == clean.get("company_id") and row.get("field") == "contactable":
                 row["value"] = True
@@ -649,7 +719,8 @@ def delivery_companies(companies, *, suppressions=None, freshness_days=180, now=
 
 
 def select_export_companies(companies, *, mode="balanced", filters=None, suppressions=None,
-                            freshness_days=180, now=None, delivery_only=False, delivery_limit=None):
+                            freshness_days=180, now=None, delivery_only=False, delivery_limit=None,
+                            policy=None, identity_version="legacy"):
     """Return the common output projection and its uncapped delivery count.
 
     Reapply delivery after channel filters so counts and primary channels always
@@ -659,13 +730,16 @@ def select_export_companies(companies, *, mode="balanced", filters=None, suppres
     export_input = companies
     if delivery_only:
         export_input = delivery_companies(companies, suppressions=suppressions,
-                                         freshness_days=freshness_days, now=now)
+                                         freshness_days=freshness_days, now=now, policy=policy,
+                                         identity_version=identity_version)
         eligible_count = len(export_input)
     selected = filter_companies([row for row in export_input if row.get("status") != "excluded"],
-        mode=mode, filters=filters, suppressions=suppressions, freshness_days=freshness_days, now=now)
+        mode=mode, filters=filters, suppressions=suppressions, freshness_days=freshness_days, now=now,
+        identity_version=identity_version)
     if delivery_only:
         selected = delivery_companies(selected, suppressions=suppressions,
-                                      freshness_days=freshness_days, now=now)
+                                      freshness_days=freshness_days, now=now, policy=policy,
+                                      identity_version=identity_version)
         if delivery_limit is not None:
             if isinstance(delivery_limit, bool) or int(delivery_limit) < 1:
                 raise ValueError("delivery_limit must be positive")

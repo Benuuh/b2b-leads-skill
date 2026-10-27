@@ -37,7 +37,8 @@ def source_files(root):
         for pattern in patterns:
             files.update(path for path in (root / folder).rglob(pattern)
                          if "__pycache__" not in path.parts)
-    files.update(root / name for name in ("backend/pyproject.toml", "backend/requirements.lock", "backend/alembic.ini")
+    files.update(root / name for name in ("backend/pyproject.toml", "backend/requirements.lock",
+                                          "backend/alembic.ini", "VERSION")
                  if (root / name).is_file())
     required = ("scripts/b2b_leads.py", "skills/b2b-leads/SKILL.md", "skills/b2b-leads/scripts/control.py")
     if any(root / name not in files for name in required):

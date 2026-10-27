@@ -26,7 +26,7 @@ def _safe_website(value: str, base_url: str = '', *, fixture=False) -> str:
         return ''
 
 
-def _company_link_priority(url: str, stage: str) -> tuple:
+def _company_link_priority(url: str, stage: str, segment=None) -> tuple:
     path = unquote(urlsplit(url).path).casefold()
     judgment = ('about', 'service', 'company', 'product', 'unternehmen', 'servicios',
                 'nosotros', '关于', '服务', '产品', '会社')
@@ -34,6 +34,10 @@ def _company_link_priority(url: str, stage: str) -> tuple:
               'person', 'equipe', 'équipe', '团队', '人员')
     contact = ('contact', 'kontakt', 'contacto', '联系', 'お問い合わせ')
     groups = (judgment, people, contact) if stage == 'qualification' else (people, contact, judgment)
+    policy = ((segment or {}).get('qualification_policy') or {}).get('contact_policy') or {}
+    if stage == 'contacts' and (segment or {}).get('spec_version') == 2 and not (
+            policy.get('named_person_required') or policy.get('required_roles')):
+        groups = (contact, judgment, people)
     priority = next((index for index, words in enumerate(groups) if any(word in path for word in words)), 3)
     return priority, len(path), url
 
@@ -103,7 +107,7 @@ def fetch_company(candidate: dict, segment: dict, *, fixture=False, max_pages=10
         for link in rank_links(links):
             if link not in seen and not _restricted_url(link):
                 queued[link] = min(queued.get(link, depth + 1), depth + 1)
-        pending[:] = sorted(queued.items(), key=lambda item: (_company_link_priority(item[0], stage), item[1]))[:limit * 3]
+        pending[:] = sorted(queued.items(), key=lambda item: (_company_link_priority(item[0], stage, segment), item[1]))[:limit * 3]
 
     for page in pages:
         for key in ('request_url', 'final_url'):

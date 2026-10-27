@@ -15,6 +15,7 @@ from urllib.parse import unquote, urljoin, urlsplit
 from bs4 import BeautifulSoup
 import phonenumbers
 from .evidence import imported_channel_sources, literal_value, website_identity, subject_excerpt
+from app.web.parsing import parsed_html
 
 EMAIL_RE = re.compile(r"(?<![\w.+-])([\w.!#$%&'*+/=?^`{|}~-]+@[\w-]+(?:\.[\w-]+)+)", re.I)
 GENERIC = {"info", "contact", "hello", "office", "admin", "enquiries", "inquiries", "mail", "reception"}
@@ -269,6 +270,52 @@ def extract_company(candidate: dict, pages: list[dict], segment: dict, *, mx_loo
     def set_company(field, value, url, kind, at, method="extracted"):
         if value is None or value == "":
             return
+        if field in {"description", "contact_form_url"} and company.get(field):
+            # JSON-LD, OpenGraph and page descriptions are complementary copy.
+            # Multiple actually observed forms are alternative public channels.
+            # Keep the first preferred value and preserve each observation.
+            provenance(company_id, field, value, url, kind, at, method)
+            return
+        prior = company.get(field)
+        equivalent = lambda item: re.findall(r'\w+', str(item).casefold())
+        same = prior not in (None, "") and str(prior).casefold() == str(value).casefold()
+        if field in {"address", "city", "region"} and prior:
+            def location_tokens(item):
+                text = str(item)
+                if field == "address" and company.get("country_code") == "US":
+                    text = re.sub(r',\s*(?:USA|United States(?: of America)?)\s*$', '', text, flags=re.I)
+                    text = re.sub(r'\b(\d{5})-\d{4}\b', r'\1', text)
+                    # A known state may be omitted by a structured address whose
+                    # street, locality and ZIP are otherwise identical.
+                    import pycountry
+                    region = str(company.get('region') or '').strip()
+                    state = pycountry.subdivisions.get(code='US-' + region.upper()) or next(
+                        (state for state in pycountry.subdivisions.get(country_code='US')
+                         if state.name.casefold() == region.casefold()), None)
+                    if state:
+                        aliases = '|'.join(re.escape(value) for value in (state.code[3:], state.name))
+                        text = re.sub(r'\b(?:' + aliases + r')\b(?=\W*\d{5}\b)', '', text, flags=re.I)
+                    aliases = {'north': 'n', 'south': 's', 'east': 'e', 'west': 'w',
+                        'northeast': 'ne', 'northwest': 'nw', 'southeast': 'se', 'southwest': 'sw',
+                        'street': 'st', 'avenue': 'ave', 'boulevard': 'blvd', 'road': 'rd',
+                        'drive': 'dr', 'lane': 'ln', 'court': 'ct', 'parkway': 'pkwy',
+                        'highway': 'hwy', 'suite': 'ste'}
+                    return [aliases.get(token, token) for token in equivalent(text)]
+                return equivalent(text)
+            same = location_tokens(prior) == location_tokens(value)
+        if field == "region" and prior and company.get("country_code") == "US":
+            import pycountry
+            def state_code(item):
+                text = str(item).strip()
+                found = pycountry.subdivisions.get(code='US-' + text.upper())
+                if found:
+                    return found.code
+                return next((state.code for state in pycountry.subdivisions.get(country_code='US')
+                             if state.name.casefold() == text.casefold()), text.casefold())
+            same = state_code(prior) == state_code(value)
+        if same:
+            provenance(company_id, field, value, url, kind, at, method)
+            return
         if company.get(field) not in (None, "") and str(company[field]).casefold() != str(value).casefold():
             conflict = {"field": field, "values": [company[field], value], "source_url": url}
             if conflict not in company["conflicts"]:
@@ -494,7 +541,7 @@ def extract_company(candidate: dict, pages: list[dict], segment: dict, *, mx_loo
         url = page.get("final_url") or page.get("url") or website
         kind = page.get("source_type") or "official_site"
         at = page.get("fetched_at") or collected
-        soup = BeautifulSoup(page.get("html") or "", "html.parser")
+        soup = parsed_html(page.get("html") or "")
         nodes = []
         for script in soup.find_all("script", type=re.compile("ld\\+json", re.I)):
             try:
@@ -551,6 +598,15 @@ def extract_company(candidate: dict, pages: list[dict], segment: dict, *, mx_loo
                                 value = None
                         set_company(field, value, url, kind, at, "json_ld")
                     set_company("address", ", ".join(str(address[k]) for k in ("streetAddress", "addressLocality", "addressRegion", "postalCode") if address.get(k)), url, kind, at, "json_ld")
+                elif isinstance(address, list):
+                    # Organization.address may be an array of operating offices.
+                    # Its Python representation is never a scalar street address
+                    # and does not assert that each office is headquarters.
+                    locations = company.setdefault('office_addresses', [])
+                    for location in address:
+                        if isinstance(location, (dict, str)) and location not in locations:
+                            locations.append(location)
+                    provenance(company_id, 'office_addresses', address, url, kind, at, 'json_ld_locations')
                 elif address:
                     set_company("address", str(address), url, kind, at, "json_ld")
                 count = node.get("numberOfEmployees")
@@ -602,9 +658,8 @@ def extract_company(candidate: dict, pages: list[dict], segment: dict, *, mx_loo
         for meta in soup.select('meta[name="description"], meta[property="og:description"]'):
             if meta.get("content"):
                 set_company("description", meta.get("content"), url, kind, at, "meta_description")
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
-        text = soup.get_text("\n", strip=True) + "\n" + str(page.get("text") or "")
+        text_view = parsed_html(page.get("html") or "", remove=('script', 'style', 'noscript'))
+        text = text_view.get_text("\n", strip=True) + "\n" + str(page.get("text") or "")
         for email in _emails(text):
             add_contact(email=email, url=url, kind=kind, at=at, method="text_or_obfuscation")
         # phonenumbers uses regional metadata and avoids arbitrary digit-only text guesses.

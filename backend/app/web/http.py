@@ -1,6 +1,7 @@
 """Bounded public HTTP with pinned DNS, robots, redirects and request observation."""
 from collections import defaultdict
 from contextlib import contextmanager
+from contextvars import ContextVar
 from email.utils import parsedate_to_datetime
 import http.client
 import math
@@ -16,14 +17,35 @@ from bs4 import BeautifulSoup
 from .errors import WebError
 from .security import normalize_url, validate_public_url as _validate_public_url
 from .observation import observation_context, observe_http, observe_lookup, current_host_limiter
+from .parsing import parsed_html
 
 USER_AGENT = 'PublicB2BResearchBot/1.0 (public business research; no login)'
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 4
+_DEADLINE = ContextVar('b2b_request_deadline', default=None)
 _host_locks = defaultdict(threading.Lock)
 _last_request = {}
 _blocked_until = {}
 _robots_cache = {}
+
+
+@contextmanager
+def request_deadline(seconds):
+    """Bound every physical request inside the command's remaining budget."""
+    if seconds is None:
+        yield
+        return
+    token = _DEADLINE.set(time.monotonic() + max(0.0, float(seconds)))
+    try:
+        yield
+    finally:
+        _DEADLINE.reset(token)
+
+
+def remaining_seconds():
+    """Remaining command budget in seconds, or ``None`` when unbounded."""
+    value = _DEADLINE.get()
+    return None if value is None else max(0.0, value - time.monotonic())
 
 
 def utc_now():
@@ -31,8 +53,8 @@ def utc_now():
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, host: str, port: int, address: str):
-        super().__init__(host, port, timeout=12, context=ssl.create_default_context())
+    def __init__(self, host: str, port: int, address: str, timeout: float = 12):
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
         self._public_address = address
 
     def connect(self):
@@ -46,11 +68,15 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
 def _open_pinned(url: str, addresses: list[str], method: str = 'GET', body: bytes | None = None) -> tuple[int, dict, bytes]:
     """No environment proxies or implicit redirects; never resolve the hostname again."""
+    budget = remaining_seconds()
+    if budget is not None and budget <= 0:
+        raise WebError('DEADLINE_EXCEEDED', '命令剩余时间不足以发送请求', retryable=True)
+    connect_timeout = 12 if budget is None else max(0.5, min(12, budget))
     parsed = urlsplit(url)
     if parsed.scheme == 'https':
-        connection = _PinnedHTTPSConnection(parsed.hostname, parsed.port or 443, addresses[0])
+        connection = _PinnedHTTPSConnection(parsed.hostname, parsed.port or 443, addresses[0], timeout=connect_timeout)
     else:
-        connection = http.client.HTTPConnection(addresses[0], parsed.port or 80, timeout=12)
+        connection = http.client.HTTPConnection(addresses[0], parsed.port or 80, timeout=connect_timeout)
     headers = {'User-Agent': USER_AGENT, 'Accept': 'text/html,text/plain,text/csv,application/json',
                'Accept-Encoding': 'identity', 'Host': parsed.netloc, 'Connection': 'close'}
     if body is not None:
@@ -69,7 +95,7 @@ def _open_pinned(url: str, addresses: list[str], method: str = 'GET', body: byte
                 pass
         connection.close()
 
-    timer = threading.Timer(30, abort_slow_response)
+    timer = threading.Timer(30 if budget is None else max(1.0, min(30.0, budget)), abort_slow_response)
     timer.daemon = True
     timer.start()
     try:
@@ -83,7 +109,7 @@ def _open_pinned(url: str, addresses: list[str], method: str = 'GET', body: byte
         length = response_headers.get('content-length', '')
         if length.isdigit() and int(length) > MAX_RESPONSE_BYTES:
             raise WebError('CONTENT_TOO_LARGE', '来源响应超过 2 MiB 上限')
-        chunks, size, deadline = [], 0, time.monotonic() + 20
+        chunks, size, deadline = [], 0, time.monotonic() + min(20, budget) if budget is not None else time.monotonic() + 20
         while True:
             if time.monotonic() > deadline:
                 raise WebError('NETWORK_TIMEOUT', '来源响应超过时间上限')
@@ -155,7 +181,11 @@ def _durable_reservation(host, delay):
         if token:
             break
         wait = max(0.001, float(claim.get('wait_seconds', 90)))
-        if wait > 30 or waited + wait > 30:
+        budget = remaining_seconds()
+        limit = 30 if budget is None else min(30.0, budget)
+        if budget is not None and budget <= 0:
+            raise WebError('DEADLINE_EXCEEDED', '命令剩余时间不足以等待来源限流', retryable=True)
+        if wait > limit or waited + wait > limit:
             raise WebError('RATE_LIMITED', '来源限流冷却中，稍后恢复', retryable=True,
                            retry_after_s=math.ceil(wait))
         time.sleep(wait)
@@ -176,6 +206,10 @@ def _rate_limited_request(url: str, *, delay: float, method: str = 'GET', body: 
                            retry_after_s=math.ceil(_blocked_until[host] - time.monotonic()))
         wait = 0 if current_host_limiter() else max(0, _last_request.get(host, 0) + max(1.0, delay) - time.monotonic())
         # A huge crawl-delay must become a resumable error, not a blocked worker thread.
+        budget = remaining_seconds()
+        if budget is not None and wait > max(0.0, budget):
+            raise WebError('DEADLINE_EXCEEDED', '来源速率等待超出命令剩余时间', retryable=True,
+                           retry_after_s=int(wait) + 1)
         if wait > 30:
             raise WebError('RATE_LIMITED', '来源速率等待超过 30 秒，稍后恢复', retryable=True,
                                 retry_after_s=int(wait) + 1)
@@ -287,7 +321,7 @@ def safe_http(url: str, *, delay: float = 2, allowed_hosts: set[str] | None = No
             html = raw.decode(encoding, errors='replace')
         except LookupError:
             html = raw.decode('utf-8', errors='replace')
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = parsed_html(html)
         text = soup.get_text(' ', strip=True)
         if soup.select_one('input[type="password"], iframe[src*="recaptcha"], [class*="g-recaptcha"]') or any(
             marker in text.lower() for marker in ('verify you are human', 'complete the captcha',

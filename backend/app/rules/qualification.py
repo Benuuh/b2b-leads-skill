@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import pycountry
 import tldextract
 from .evidence import website_identity, subject_excerpt, company_name_pattern
+from app.web.parsing import parsed_html
 
 _suffix = tldextract.TLDExtract(suffix_list_urls=())
 PROFILE_FIELDS = ('company_name', 'website_url', 'country_code', 'region', 'city',
@@ -113,7 +114,7 @@ def observations(candidate, pages):
     for page in pages:
         if page.get('error'):
             continue
-        soup = BeautifulSoup(page.get('html', ''), 'html.parser')
+        soup = parsed_html(page.get('html', ''))
         item = {'source_url': page.get('final_url'), 'source_type': 'official_site',
                 'retrieved_at': page.get('fetched_at'),
                 'source_id':page.get('source_id') or 'unknown', 'query_id':page.get('query_id') or 'unknown'}
@@ -162,9 +163,8 @@ def observations(candidate, pages):
                 item.setdefault('company_name', meta['content'])
         business_text.extend(str(meta.get('content') or '') for meta in
                              soup.select('meta[name="description"], meta[property="og:description"]'))
-        for tag in soup(['script', 'style', 'noscript']):
-            tag.decompose()
-        item['text'] = '\n'.join([soup.get_text('\n', strip=True), *business_text])
+        text_view = parsed_html(page.get('html', ''), remove=('script', 'style', 'noscript'))
+        item['text'] = '\n'.join([text_view.get_text('\n', strip=True), *business_text])
         item['subject_name'] = candidate.get('company_name')
         item['subject_bound'] = True  # assess_candidate admits only confirmed official sites.
         # Plain-text adapters may not supply HTML.
@@ -229,9 +229,9 @@ def _industry_hits(ref, words):
             if listing:
                 category = True
             verb = r'(?:is|are|provides?|offers?|performs?|handles?|speciali[sz]es?\s+in|operates?\s+in)'
-            qualifiers = r'(?:(?:a|an|the|leading|international|global|professional|specialist)\s+){0,4}'
+            qualifiers = r'(?:(?:a|an|the|leading|international|global|professional|specialist|family-run|licensed|FMC-licensed|technology-enabled|full-service|independent|privately-owned)\s+){0,6}'
             own_service = re.search(r'^' + subject + r'\s+' + verb + r'\s+' + qualifiers + term
-                + r'(?=$|\s+(?:services?|company|firm|provider|operations|in|across|throughout|worldwide|based)\b)', sentence, re.I)
+                + r'(?=$|\s+(?:services?|company|firm|provider|operations|in|across|throughout|worldwide|based|headquartered|and|with)\b)', sentence, re.I)
             if own_service:
                 category = True
         if category:
@@ -305,7 +305,12 @@ def assess_candidate(candidate, pages, spec, observed=None):
         if not excluded and any(value in spec.get('countries', []) for value in countries):
             decision = 'uncertain'
         reasons.append('国家来源证据存在冲突')
-    if conflicts and decision == 'qualified':
+    # Several public company phone numbers are alternatives, not contradictory
+    # evidence about the company's country, industry or website identity.
+    qualifying_conflicts = [item for item in conflicts if not (
+        isinstance(item, dict) and item.get('field') == 'main_phone'
+        and item.get('reason') == 'multiple_public_values')]
+    if qualifying_conflicts and decision == 'qualified':
         decision = 'uncertain'; reasons.append('存在冲突证据，需按来源进一步确认')
     if binding['status'] == 'conflicting' and decision != 'excluded':
         decision = 'uncertain'; reasons.append('官网主体证据与候选企业存在冲突')
