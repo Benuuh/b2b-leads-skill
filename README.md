@@ -15,6 +15,7 @@
   <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <a href="https://github.com/Benuuh/b2b-leads-skill/actions/workflows/ci.yml"><img src="https://github.com/Benuuh/b2b-leads-skill/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/schema-skill__v2__003-6f42c1" alt="Schema skill_v2_003">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT License"></a>
 </p>
 
 <p align="center">
@@ -227,4 +228,6 @@ bench/                  合成 cohort 的 A/B 基准原始结果
 
 ## License
 
-本仓库目前未附带 `LICENSE` 文件；在作者明确授权前，源码版权归作者所有。第三方依赖和历史许可证见 [NOTICE](NOTICE) 与 `third_party/licenses/`。
+MIT License，Copyright (c) 2026 Benuuh。可以商用、修改、再分发，只需保留版权声明和许可证文本。完整条款见 [LICENSE](LICENSE)。
+
+第三方依赖和历史许可证见 [NOTICE](NOTICE) 与 `third_party/licenses/`；它们不因本项目的 MIT 许可证而改变。
