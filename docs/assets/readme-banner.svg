@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="B2B Leads — evidence-first lead research">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1720"/>
+      <stop offset="0.55" stop-color="#12303d"/>
+      <stop offset="1" stop-color="#1b4a54"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#48d7c1"/>
+      <stop offset="1" stop-color="#7fe0a8"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="320" fill="url(#bg)"/>
+  <g opacity="0.16" stroke="#7fe0a8" stroke-width="1">
+    <path d="M0 250 L1200 120 M0 290 L1200 180 M0 210 L1200 70"/>
+  </g>
+  <circle cx="1040" cy="74" r="120" fill="#48d7c1" opacity="0.08"/>
+  <circle cx="1080" cy="252" r="86" fill="#7fe0a8" opacity="0.07"/>
+  <text x="80" y="112" fill="#8be8d4" font-family="Segoe UI, Arial, sans-serif" font-size="22" letter-spacing="4">EVIDENCE-FIRST B2B RESEARCH</text>
+  <text x="80" y="190" fill="#ffffff" font-family="Segoe UI, Arial, sans-serif" font-size="72" font-weight="700">B2B Leads</text>
+  <rect x="82" y="214" width="88" height="6" rx="3" fill="url(#accent)"/>
+  <text x="80" y="258" fill="#c8d7dd" font-family="Segoe UI, Arial, sans-serif" font-size="24">Search, verify and deliver sourced business contacts — locally.</text>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#d8f5ee">
+    <rect x="80" y="282" width="128" height="26" rx="13" fill="#ffffff" opacity="0.08"/>
+    <text x="96" y="300">Python 3.12</text>
+    <rect x="220" y="282" width="156" height="26" rx="13" fill="#ffffff" opacity="0.08"/>
+    <text x="236" y="300">PostgreSQL 16</text>
+    <rect x="388" y="282" width="136" height="26" rx="13" fill="#ffffff" opacity="0.08"/>
+    <text x="404" y="300">no daemon</text>
+  </g>
+  <g transform="translate(900 120)" fill="none" stroke="#7fe0a8" stroke-width="2">
+    <circle cx="0" cy="0" r="54" opacity="0.7"/>
+    <circle cx="0" cy="0" r="82" opacity="0.35"/>
+    <circle cx="0" cy="0" r="110" opacity="0.18"/>
+    <path d="M-24 0 L-6 18 L28 -18" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
