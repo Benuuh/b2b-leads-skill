@@ -445,7 +445,13 @@ def test_default_export_tracks_suppression_and_freshness(clean_db, monkeypatch):
     assert restored['export_id'] != first['export_id']
     assert runs.export('snapshot')['export_id'] == restored['export_id']
     future = utcnow() + timedelta(days=181)
-    monkeypatch.setattr(runs, 'utcnow', lambda: future)
+    # S10 拆包后 runs 是包：utcnow 由具体子模块持有；单片布局回滚时则是模块本身。
+    # 两种布局都打上补丁（子模块只在拆包布局下存在），保证回滚演练同样全绿。
+    import sys as _sys
+    targets = [runs] + [_sys.modules[name] for name in ('app.runs._core', 'app.runs.query')
+                        if name in _sys.modules]
+    for target in targets:
+        monkeypatch.setattr(target, 'utcnow', lambda: future)
     expired = runs.export('snapshot')
     assert expired['manifest']['row_counts']['companies'] == 0
 

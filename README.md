@@ -1,6 +1,6 @@
 # B2B 客户研究：Skill 单入口
 
-通过 Skill 搜索并核对目标企业，再由本机 Python 核心有限补齐官网资料、校验联系方式、保存进度和导出中文 Excel。只需要 Python 3.12 与 PostgreSQL，不启动网页、HTTP API 或常驻 worker。
+通过 Skill 搜索并核对目标企业，再由本机 Python 核心有限补齐官网资料、校验联系方式、保存进度和导出中文 Excel。只需要 Python 3.12 与 PostgreSQL，不启动常驻网页服务、HTTP API 或常驻 worker；只有在用户主动运行 `live` 时才提供绑定本机的短时只读页面。
 
 同一 Skill 与核心可加载不同的客群配置，按相同证据、状态、预算与交付机制研究不同行业：`spec_version: 2` 把资格条件、渠道政策与执行参数配置化，行业代码不需要改动。已有的无版本输入仍按 v1 解释。
 
@@ -10,12 +10,17 @@
 .\.venv\Scripts\python.exe scripts/b2b_leads.py capabilities
 .\.venv\Scripts\python.exe scripts/b2b_leads.py prepare
 .\.venv\Scripts\python.exe scripts/b2b_leads.py list
+.\.venv\Scripts\python.exe scripts/b2b_leads.py live --run RUN
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-b2b-leads.ps1
 ```
 
 `capabilities` 与 `validate-input` 完全离线：前者列出支持的配置版本、事实字段、运算符、渠道政策和核心限额，后者逐条预检候选并返回可提交子集。`process` 在 v2 批次按冻结的执行政策有界并发（默认 2 个 worker），`supplement` 为已保留企业追加增量证据。
 
-2.2.0 的速度路径：`advance --run RUN --chunk ROUND --input-json FILE` 将原子预检/追加及有界处理合为一次启动；v2 普通渠道先访问已观察到的联系页，并在单企业内复用 HTML 解析和联系提取。提速优先的新任务可显式选 4 个公司 worker，首批 5 家形成快照。说明与实测见 `docs/specs/SPEC-speed-first-v2.md` 及本轮实施记录。
+2.2.0 起的速度路径：`advance --run RUN --chunk ROUND --input-json FILE` 将原子预检/追加及有界处理合为一次启动；v2 普通渠道先访问已观察到的联系页，并在单企业内复用 HTML 解析和联系提取。提速优先的新任务可显式选 4 个公司 worker，首批 5 家形成快照。说明与实测见 `docs/specs/SPEC-speed-first-v2.md` 及本轮实施记录。
+
+### 实时成果页面
+
+`live --run RUN` 是用户主动启动的前台查看命令：它在受管理工件目录写入一份只读投影，并启动仅绑定 `127.0.0.1` 的临时页面服务。命令输出带随机令牌的地址；页面可看真实状态、冻结目标、已准入、已确认可交付、待核实、缺口和逐家证据，支持搜索、国家/渠道筛选、复制联系方式和按当前筛选导出。命令停止即退出，默认 30 分钟无活动自动结束；不会自动弹窗、不采集、不改任务状态。`--open` 才打开默认浏览器，`--rebuild-only` 只刷新页面数据。页面数据、计数和导出都来自同一已提交核心状态；没有真实任务时不会声称任何速度指标已达标。详见 [实施记录](docs/IMPLEMENTATION-live-results-speed-v1.md)。
 
 安装后可以说：“用 $b2b-leads 找 200 家美国货代，要公开商务联系方式，导出中文 Excel。”
 
@@ -38,11 +43,12 @@ backend/app/
   rules/               资格政策、身份、联系方式、评分
   web/                 安全 HTTP、官网抓取、DNS/MX、请求观测
   delivery/            渠道政策、公共筛选、质量指标、Excel/CSV 编码
+  live/                已提交状态投影与本机短时只读页面
   persistence/         PostgreSQL、文件、备份恢复
 backend/tests/         规则及隔离 PostgreSQL 集成测试
 ```
 
-详细说明见 [模块与数据流](docs/architecture.md)、[操作手册](docs/operations.md)、[客群配置](skills/b2b-leads/references/segment-spec.md)、[证据合同](skills/b2b-leads/references/evidence-contract.md)、[本轮改造实施记录](docs/IMPLEMENTATION-skill-performance-v1.md)。
+详细说明见 [模块与数据流](docs/architecture.md)、[操作手册](docs/operations.md)、[客群配置](skills/b2b-leads/references/segment-spec.md)、[证据合同](skills/b2b-leads/references/evidence-contract.md)、[运行效率实施记录](docs/IMPLEMENTATION-runtime-efficiency-v2.6.md)。
 
 ## 新旧数据隔离
 
@@ -52,7 +58,7 @@ backend/tests/         规则及隔离 PostgreSQL 集成测试
 
 ## 安装与测试
 
-版本号以根目录 `VERSION`、`backend/app/__init__.py`、`backend/pyproject.toml` 与 `skills/b2b-leads/SKILL.md` 头部一致；运行时可从 `capabilities` 的 `skill_version`/`core_version`、`prepare`/`status` 的 `release` 以及导出清单的 `runtime_release` 读取。当前版本 `2.2.0`。
+版本号以根目录 `VERSION`、`backend/app/__init__.py`、`backend/pyproject.toml` 与 `skills/b2b-leads/SKILL.md` 头部一致；运行时可从 `capabilities` 的 `skill_version`/`core_version`、任何命令 stderr 的版本横幅、JSON 结果的 `versions` 字段、`prepare`/`status` 的 `release` 以及导出清单的 `runtime_release` 读取。当前源码为 `2.7.0`，schema `skill_v2_003`。
 
 ```powershell
 python -m venv .venv

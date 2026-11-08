@@ -12,6 +12,7 @@ from collections import OrderedDict
 from hashlib import sha256
 import json
 import re
+import time
 
 import pycountry
 
@@ -342,6 +343,21 @@ def assess_policy(candidate, pages, spec):
 
 _CACHE = OrderedDict()
 _CACHE_LIMIT = 128
+_CACHE_STATS = {'hits': 0, 'misses': 0, 'fingerprint_seconds': 0.0, 'fingerprints': 0}
+
+
+def policy_cache_stats():
+    """Diagnostics only: hit rate and fingerprint time for the policy LRU."""
+    result = dict(_CACHE_STATS)
+    total = result['hits'] + result['misses']
+    result['hit_rate'] = (result['hits'] / total) if total else None
+    result['fingerprint_p50_seconds'] = (
+        result['fingerprint_seconds'] / result['fingerprints']) if result['fingerprints'] else None
+    return result
+
+
+def reset_policy_cache_stats():
+    _CACHE_STATS.update(hits=0, misses=0, fingerprint_seconds=0.0, fingerprints=0)
 
 
 def assess_policy_cached(candidate, pages, spec):
@@ -350,11 +366,16 @@ def assess_policy_cached(candidate, pages, spec):
     The fingerprint covers the entity, every retained page and the frozen
     policy, so another entity or another rule version can never share a result.
     """
+    began = time.perf_counter()
     key = evidence_fingerprint(candidate, pages, spec)
+    _CACHE_STATS['fingerprints'] += 1
+    _CACHE_STATS['fingerprint_seconds'] += max(0.0, time.perf_counter() - began)
     cached = _CACHE.get(key)
     if cached is not None:
+        _CACHE_STATS['hits'] += 1
         _CACHE.move_to_end(key)
         return deepcopy(cached)
+    _CACHE_STATS['misses'] += 1
     result = assess_policy(candidate, pages, spec)
     _CACHE[key] = deepcopy(result)
     while len(_CACHE) > _CACHE_LIMIT:
@@ -367,7 +388,7 @@ def evidence_fingerprint(candidate, pages, spec):
     payload = {'candidate': _stable(candidate),
                'pages': _stable(pages),
                'spec': _stable(spec), 'rule': RULE_VERSION,
-               'window': int(__import__('time').time() // 300)}
+               'window': int(time.time() // 300)}
     return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
 

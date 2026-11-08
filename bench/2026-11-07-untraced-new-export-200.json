@@ -1,0 +1,203 @@
+{
+ "app_root": "<repo>/D:/b2b-leads-skill/backend",
+ "scenario": "export",
+ "repeats": 5,
+ "cohorts": [
+  {
+   "scenario": "export",
+   "cohort": 200,
+   "repeats": 5,
+   "p50_seconds": 2.297898,
+   "p95_seconds": 2.335477,
+   "mean_seconds": 2.2199706,
+   "stdev_seconds": 0.16584869729798912,
+   "peak_rss": null,
+   "tracemalloc_peak": null,
+   "sql_calls_p50": 12,
+   "selection_calls_last": {
+    "prepare_cohort": 1,
+    "_prepare_cohort": 4,
+    "coalesce_companies": 6,
+    "select_export_companies": 1,
+    "filter_companies": 4,
+    "_deliver_selected": 2
+   },
+   "rounds": [
+    {
+     "repeat": 1,
+     "seconds": 1.891471,
+     "sql_calls": 12,
+     "selection_calls": {
+      "prepare_cohort": 1,
+      "_prepare_cohort": 4,
+      "coalesce_companies": 6,
+      "select_export_companies": 1,
+      "filter_companies": 4,
+      "_deliver_selected": 2
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    },
+    {
+     "repeat": 2,
+     "seconds": 2.297898,
+     "sql_calls": 12,
+     "selection_calls": {
+      "prepare_cohort": 1,
+      "_prepare_cohort": 4,
+      "coalesce_companies": 6,
+      "select_export_companies": 1,
+      "filter_companies": 4,
+      "_deliver_selected": 2
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    },
+    {
+     "repeat": 3,
+     "seconds": 2.264253,
+     "sql_calls": 12,
+     "selection_calls": {
+      "prepare_cohort": 1,
+      "_prepare_cohort": 4,
+      "coalesce_companies": 6,
+      "select_export_companies": 1,
+      "filter_companies": 4,
+      "_deliver_selected": 2
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    },
+    {
+     "repeat": 4,
+     "seconds": 2.310754,
+     "sql_calls": 12,
+     "selection_calls": {
+      "prepare_cohort": 1,
+      "_prepare_cohort": 4,
+      "coalesce_companies": 6,
+      "select_export_companies": 1,
+      "filter_companies": 4,
+      "_deliver_selected": 2
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    },
+    {
+     "repeat": 5,
+     "seconds": 2.335477,
+     "sql_calls": 12,
+     "selection_calls": {
+      "prepare_cohort": 1,
+      "_prepare_cohort": 4,
+      "coalesce_companies": 6,
+      "select_export_companies": 1,
+      "filter_companies": 4,
+      "_deliver_selected": 2
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    }
+   ]
+  }
+ ],
+ "generated_at": "2026-11-07T02:31:39.764727+00:00",
+ "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+ "note": "isolated sca_bench database; fixed deterministic cohort",
+ "app_file": "<repo>/backend/app/__init__.py"
+}

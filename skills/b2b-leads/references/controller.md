@@ -16,9 +16,24 @@ Use the checkout `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (oth
 .\.venv\Scripts\python.exe scripts/b2b_leads.py process --run de-packaging-20261027 --resume
 .\.venv\Scripts\python.exe scripts/b2b_leads.py finish --run de-packaging-20261027
 .\.venv\Scripts\python.exe scripts/b2b_leads.py export --run de-packaging-20261027
+.\.venv\Scripts\python.exe scripts/b2b_leads.py live --run de-packaging-20261027
+.\.venv\Scripts\python.exe scripts/b2b_leads.py live --run de-packaging-20261027 --rebuild-only
 ```
 
-`capabilities` and `validate-input` are offline: no database write, no HTTP/DNS and no implicit maintenance. Every other command prepares the core and invokes bounded database-backed maintenance. `prepare` connects to PostgreSQL, starts only the existing workspace Windows cluster if needed, creates the independent Skill database and validates its schema. There is no API, browser workbench, login or worker. `--url` has been removed. Existing legacy databases and runtime state are not upgraded or resumed; credentials are never printed.
+Version is printed on stderr for every command (`b2b-leads Skill … · 核心 … · 规则 … · release …`) and every JSON result carries a `versions` object (skill/core/rule/schema/release_id/installed).
+
+Staged evidence (offline converter, added in 2.5.0; same precheck and admission rules):
+
+```powershell
+.\.venv\Scripts\python.exe scripts/b2b_leads.py stage-draft --spec-json SPEC.json --artifact-json ARTIFACT.json --candidate-ids a,b --as-of 2026-11-03T00:00:00+00:00 --out subset.json
+.\.venv\Scripts\python.exe scripts/b2b_leads.py advance --run RUN --artifact-json ARTIFACT.json --candidate-ids a,b --as-of 2026-11-03T00:00:00+00:00
+```
+
+`stage-draft` validates observed evidence, converts only supported fields and returns the submittable count plus per-candidate error codes; `advance --artifact-json` does the same conversion in-process before submitting and defaults the chunk to the content hash. Neither overrides precheck, channel or delivery rules.
+
+`capabilities`, `validate-input` and `stage-draft` are offline: no database write, no HTTP/DNS and no implicit maintenance. Every other command prepares the core and invokes bounded database-backed maintenance. `prepare` connects to PostgreSQL, starts only the existing workspace Windows cluster if needed, creates the independent Skill database and validates its schema. There is no API, browser workbench, login or worker. `--url` has been removed. Existing legacy databases and runtime state are not upgraded or resumed; credentials are never printed.
+
+`live` is a foreground viewing command: it writes the committed-state projection under the artifact root and serves a short-lived page bound only to `127.0.0.1` with a per-process token, printing one JSON line with the URL. It never collects, changes a run, runs maintenance from the page or exports by itself; the page's export button calls the core with the current filters. It exits on inactivity or Ctrl+C, and only `--open` opens a browser. `--rebuild-only` refreshes the saved projection without serving. Do not treat the projection file, a page refresh or the lack of a background process as proof that the run is active.
 
 ## Customer spec
 
@@ -92,6 +107,12 @@ For an observed form use top-level `contact_form_url` and a source entry with `f
 - Return `file` and `report_file` as local clickable links. `summary`, `snapshot_at`, `delivery_policy` and `policy` describe the actual export snapshot, including a cached export; `current_progress` separately describes the latest batch state. Unknown observations remain null. Contactable means public, sourced, quality-eligible channels that meet the frozen channel policy; delivery/reachability has not been exercised.
 - `status` reports `discovered` (admitted enterprises, unchanged meaning), `append_ready`, `discovery_seen`, `qualified_by_origin` (live/offline evidence/supplement/reassess), field and channel `missing_items`, failure categories and versioned metrics. Tool invocations and physical HTTP attempts are separate; unknown stays null.
 - The eight-hour budget counts every nonpaused wall-clock interval, including time after a closed chat or machine failure. Pause at session boundaries; a recovered expired run must report its remaining gap rather than claiming active research lasted eight hours.
+
+## Data sources (2.6)
+
+`discover --run RUN [--source eu_ted|eurostat_comext|google_places|all] [--limit N]` runs the public adapters and stores **unverified** rows in the source pool plus an encrypted raw-record envelope. Unverified rows never count as discovered/qualified and never enter the dedup pool; only evidence-backed `advance` admits a company. `discover --run RUN --list [--source X]` reads the pool. `--reject <id> --reason "..."` requires a non-empty reason. `--explain <id> --yes` decrypts one envelope after explicit confirmation; a failed decryption returns `{"status":"undecryptable","reason":"key_mismatch"}` and keeps the ciphertext instead of raising. `sources` reports adapter availability and credentials. Single-source failures are recorded as `source_error` / `source_empty` / `source_limit` / `source_parse_error` without blocking other sources; when every source fails the run is marked `partial_no_source` and discovery stops instead of spinning. Use `discover --run RUN --legacy-search` to fall back to manual discovery (`mode: legacy`, no `source_ref`).
+
+Secrets: `PROSPECT_SOURCE_RAW_ENVELOPE_SECRET` is required in production (startup refuses without it) and degrades to plaintext envelopes marked `dev-insecure` in development; `PROSPECT_CURSOR_SECRET` is optional but must be ≥32 bytes when set; `PROVIDER_CREDENTIAL_KEY` is only needed for paid sources. `capabilities` reports these under `secrets`.
 
 ## Administration
 

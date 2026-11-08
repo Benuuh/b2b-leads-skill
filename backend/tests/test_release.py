@@ -182,3 +182,11 @@ def test_windows_installer_runs_verified_wrapper(tmp_path):
     executed = command(destination)
     assert executed.returncode == 0, executed.stdout.decode(errors="replace")
     assert b"delete-company" in executed.stdout
+
+
+def test_installed_bundle_carries_the_live_page_assets():
+    files = release.source_files(ROOT)
+    for name in ("backend/app/live/projection.py", "backend/app/live/viewer.py",
+                 "backend/app/live/assets/index.html", "backend/app/live/assets/app.css",
+                 "backend/app/live/assets/app.js"):
+        assert name in files, name

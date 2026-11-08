@@ -92,15 +92,20 @@ def _contact_priority(contact):
     return priority, round(_PRIORITY_BASE[priority] * quality * freshness * conflict * validation, 2)
 
 
-def rank_contacts(contacts) -> list:
-    """Copy contacts, annotate priority, and order best available channels first."""
-    ranked = deepcopy(list(contacts or []))
+def _rank_inplace(contacts) -> list:
+    """Annotate and sort contacts that the caller already owns."""
+    ranked = list(contacts or [])
     for contact in ranked:
         contact["contact_priority"], contact["priority_score"] = _contact_priority(contact)
     return sorted(ranked, key=lambda contact: (
         -contact["priority_score"], str(contact.get("contact_id") or ""),
         str(contact.get("contact_name") or "").casefold(),
         str(contact.get("email") or "").casefold(), str(contact.get("phone") or "")))
+
+
+def rank_contacts(contacts) -> list:
+    """Copy contacts, annotate priority, and order best available channels first."""
+    return _rank_inplace(deepcopy(list(contacts or [])))
 
 
 def _primary(contacts, field):
@@ -113,20 +118,23 @@ def _primary(contacts, field):
         else:
             contact["email"] = None
             contact["email_type"] = None
-    return next((contact[field] for contact in rank_contacts(candidates)
+    return next((contact[field] for contact in _rank_inplace(candidates)
                  if contact["priority_score"] > 0 and contact.get(field)), None)
 
 
-def score_company(record) -> dict:
+def score_company(record, *, copy=True) -> dict:
     """Recompute scores from retained facts, including records predating scoring.
 
     Lead points: qualification 35, best contact 45, email/phone coverage 8,
     independent evidence 7, factual completeness 5, minus conflict penalties.
     Uncertain leads are capped at 59 and excluded leads at 20. Evidence
     confidence uses source authority and observed contact confidence separately.
+
+    Internal selection passes already own a detached row and may pass
+    ``copy=False``; the public default keeps returning a detached record.
     """
-    company = deepcopy(record)
-    contacts = rank_contacts(company.get("contacts"))
+    company = deepcopy(record) if copy else record
+    contacts = _rank_inplace(company.get("contacts"))
     company["contacts"] = contacts
     usable = [contact for contact in contacts if contact["priority_score"] > 0]
     observed = [contact for contact in usable if contact["contact_priority"] != "inferred"]

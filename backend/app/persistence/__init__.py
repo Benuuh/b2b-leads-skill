@@ -14,7 +14,10 @@ from app.errors import AppError
 
 _engine = None
 _factory = None
-SCHEMA_REVISION = 'skill_v2_002'
+SCHEMA_REVISION = 'skill_v2_003'
+
+# skill_v2_003：数据源适配器的未核实候选池与原始记录信封（spec 2.6 §3.1）。
+DISCOVERY_TABLES = ('prospect_source_candidates', 'prospect_source_envelopes')
 
 
 def utcnow():
@@ -65,18 +68,33 @@ def initialize():
             if 'alembic_version' not in names:
                 raise AppError('LEGACY_DATABASE', '数据库已有旧表；请配置独立的 SCA_DATABASE_URL', 409)
             revision = connection.scalar(text('SELECT version_num FROM alembic_version'))
-            if revision not in {'skill_v2_001', SCHEMA_REVISION} or names - set(Base.metadata.tables) - {'alembic_version'}:
+            if revision not in {'skill_v2_001', 'skill_v2_002', SCHEMA_REVISION} or \
+                    names - set(Base.metadata.tables) - {'alembic_version'}:
                 raise AppError('LEGACY_DATABASE', '数据库不是 Skill v2 基线；不会覆盖旧数据库', 409)
             operational = {'skill_host_limits', 'skill_pending_artifact_deletes', 'skill_robots_cache'}
+            pending_upgrade = revision in {'skill_v2_001', 'skill_v2_002'}
             required = set(Base.metadata.tables) - (operational if revision == 'skill_v2_001' else set())
+            if pending_upgrade:
+                # 旧基线允许缺新表，升级分支补建。
+                required -= set(DISCOVERY_TABLES)
             if required - names:
                 raise AppError('SCHEMA_INCOMPLETE', 'Skill v2 数据库缺表，请恢复备份或检查迁移', 409)
             if revision == 'skill_v2_001':
                 from .schema import add_operational_tables
                 add_operational_tables(connection)
-                connection.execute(text('UPDATE alembic_version SET version_num = :revision'), {'revision': SCHEMA_REVISION})
-            elif 'report_hash' not in {column['name'] for column in inspect(connection).get_columns('skill_exports')}:
+                revision = 'skill_v2_002'
+            if revision != SCHEMA_REVISION:
+                # 逐版本升级：2_002 → 2_003 补建数据源适配器表。
+                Base.metadata.create_all(connection, tables=[
+                    Base.metadata.tables[name] for name in DISCOVERY_TABLES
+                    if name not in names])
+            elif set(DISCOVERY_TABLES) - names:
+                Base.metadata.create_all(connection, tables=[
+                    Base.metadata.tables[name] for name in DISCOVERY_TABLES])
+            if 'report_hash' not in {column['name'] for column in inspect(connection).get_columns('skill_exports')}:
                 raise AppError('SCHEMA_INCOMPLETE', 'Skill v2 数据库缺少报告校验列，请恢复备份或检查迁移', 409)
+            if revision != SCHEMA_REVISION:
+                connection.execute(text('UPDATE alembic_version SET version_num = :revision'), {'revision': SCHEMA_REVISION})
         else:
             Base.metadata.create_all(connection)
             connection.execute(text('CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)'))

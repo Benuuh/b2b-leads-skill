@@ -52,6 +52,7 @@ def identity_key(candidate, *, version: int = 2) -> str:
                     '' if host else re.sub(r'\W', '', str(candidate.get('address') or '').casefold())])
 
 
+# TODO(dead?): 全仓零引用（S10 扫描）；保留以兼容外部调用，确认后删除。
 def legacy_identity_key(candidate) -> str:
     return identity_key(candidate, version=1)
 

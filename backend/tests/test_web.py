@@ -216,7 +216,8 @@ def test_durable_robots_rules_are_rechecked_without_a_robots_refetch(fake_networ
     assert events == ['robots_get'] and calls == []
 
 
-def test_company_fetch_is_ten_pages_max_and_no_login_external_links(fake_network, segment):
+def test_company_fetch_is_contacts_capped_and_no_login_external_links(fake_network, segment):
+    # spec b2b-leads-2.6 O3：contacts 阶段硬上限 3 页（原 10 页）。
     routes, calls = fake_network
     home = 'https://public.example.com/'
     links = ''.join(f'<a href="/contact-{index}">Contact</a>' for index in range(30))
@@ -224,8 +225,8 @@ def test_company_fetch_is_ten_pages_max_and_no_login_external_links(fake_network
     for index in range(30):
         routes[f'https://public.example.com/contact-{index}'] = ok('<p>sales@public.example.com</p>')
     pages = crawler.fetch_company({'website_url': home}, segment, max_pages=100)
-    assert len(pages) == 10 and all(page['fetch_status'] == 'ok' for page in pages)
-    assert len(calls) == 11
+    assert len(pages) == crawler.CONTACTS_PAGE_CAP and all(page['fetch_status'] == 'ok' for page in pages)
+    assert len(calls) == crawler.CONTACTS_PAGE_CAP + 1  # robots.txt 不计入页面
     assert all('other.example.com' not in call[0] and '/login' not in call[0] for call in calls)
 
 

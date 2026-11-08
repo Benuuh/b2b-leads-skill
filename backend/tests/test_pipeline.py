@@ -315,13 +315,17 @@ def test_company_budget_exhaustion_is_explicit_without_network(network):
     assert calls == extractions == []
 
 
-def test_pipeline_enforces_ten_page_cap_even_if_plan_requests_more(network):
+def test_pipeline_enforces_page_cap_even_if_plan_requests_more(network):
+    # spec b2b-leads-2.6 O3：contacts 阶段硬上限 3 页（首页 + 2 个 contact 链接），
+    # plan 请求再多也不能突破。
     content, calls, _ = network
     content[HOME] = '<p>Freight forwarding</p>' + ''.join(f'<a href="/contact-{i}">Contact</a>' for i in range(20))
     pages = []
     result = process_company(task(plan={'page_limit_per_company': 100, 'page_limit_total': 1000}), pages)
-    assert len(calls) == len(pages) == 10
-    assert result['pipeline']['stop_reason'] == 'page_budget_reached'
+    assert len(calls) == len(pages) == 3
+    # pipeline 的计划上限仍是 10（plan 100 取 core 上限），抓取在 3 页处停止，
+    # 因此按 pipeline 视角是"没有更多页面"而不是计划预算耗尽。
+    assert result['pipeline']['stop_reason'] == 'no_more_pages'
 
 
 @pytest.mark.parametrize('excerpt', [

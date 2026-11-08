@@ -43,7 +43,9 @@ def test_controller_returns_json_and_preserves_run(monkeypatch, capsys):
         return {"run_id": args.run, "status": "paused"}
     monkeypatch.setattr(cli, "dispatch", dispatch)
     assert cli.main(["status", "--run", "example-run", "--action", "pause"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"run_id": "example-run", "status": "paused"}
+    payload = json.loads(capsys.readouterr().out)
+    assert payload.pop("versions")["core_version"]
+    assert payload == {"run_id": "example-run", "status": "paused"}
 
 
 def test_errors_do_not_print_exception_credentials(monkeypatch, capsys):

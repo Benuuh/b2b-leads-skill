@@ -63,14 +63,16 @@ def _field_list(name, defaults, fields):
 def build_export(companies: list, manifest: dict, *, format="xlsx", mode="balanced", filters=None,
                  fields=None, language="en", suppressions=None, metrics_context=None, now=None,
                  delivery_only=False, delivery_limit=None, policy=None,
-                 identity_version="legacy") -> tuple[bytes, str, str, dict]:
+                 identity_version="legacy", channels=None, selected=None,
+                 eligible_delivery=None) -> tuple[bytes, str, str, dict]:
     if manifest.get("demo_only") or any(company.get("demo_only") for company in companies):
         raise ValueError("演示批次不能作为正式获客名单导出")
     current = now or (metrics_context or {}).get("as_of") or manifest.get("generated_at") or datetime.now(timezone.utc)
-    selected, eligible_delivery = select_export_companies(companies, mode=mode, filters=filters,
-        suppressions=suppressions, freshness_days=manifest.get("freshness_days", 180), now=current,
-        delivery_only=delivery_only, delivery_limit=delivery_limit, policy=policy,
-        identity_version=identity_version)
+    if selected is None:
+        selected, eligible_delivery = select_export_companies(companies, mode=mode, filters=filters,
+            suppressions=suppressions, freshness_days=manifest.get("freshness_days", 180), now=current,
+            delivery_only=delivery_only, delivery_limit=delivery_limit, policy=policy,
+            identity_version=identity_version, channels=channels)
     if format not in {"xlsx", "csv", "zip"}:
         raise ValueError("Export format must be xlsx or csv")
     headers = HEADERS_ZH if language.lower().startswith("zh") else {}
@@ -110,6 +112,7 @@ def build_export(companies: list, manifest: dict, *, format="xlsx", mode="balanc
     if delivery_only:
         completed["delivery"] = {"policy_version": DELIVERY_POLICY_VERSION,
             "eligible_count": eligible_delivery, "exported_count": len(selected), "limit": delivery_limit,
+            "channel_filter": list(channels) if channels else None,
             "channels": {channel: sum(channel in company.get("delivery_channels", []) for company in selected)
                          for channel in ("email", "phone", "contact_form")},
             "semantics": "qualified_unique_enterprises_with_fresh_observed_source_backed_public_channels; not_delivery_guaranteed"}

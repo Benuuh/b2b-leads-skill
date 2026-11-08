@@ -37,5 +37,6 @@ def legacy_channels(present):
     return [LEGACY_CHANNEL_NAMES[name] for name in present if name in LEGACY_CHANNEL_NAMES]
 
 
+# TODO(dead?): 全仓零引用（S10 扫描）；保留以兼容外部调用，确认后删除。
 def allowed_channels(policy):
     return normalize_channel_policy(policy)['allowed_types']

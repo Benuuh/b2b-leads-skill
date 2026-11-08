@@ -349,5 +349,6 @@ def spec_version(spec: dict) -> int:
     return value if value in (1, 2) else 1
 
 
+# TODO(dead?): 全仓零引用（S10 扫描）；保留以兼容外部调用，确认后删除。
 def policy_of(spec: dict) -> dict | None:
     return (spec or {}).get('qualification_policy') if spec_version(spec) == 2 else None

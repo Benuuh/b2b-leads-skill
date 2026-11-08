@@ -76,6 +76,7 @@ def validate_public_url(url: str, resolver=None) -> tuple[str, list[str]]:
     return normalized, addresses
 
 
+# TODO(dead?): 全仓零引用（S10 扫描）；保留以兼容外部调用，确认后删除。
 def check_redirect(url: str, allowed_hosts: tuple[str, ...], *, fixture=False, resolver=None) -> str:
     normalized = normalize_url(url, fixture=fixture)
     if urlsplit(normalized).hostname not in allowed_hosts:

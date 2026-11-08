@@ -1,0 +1,7 @@
+Example directory (synthetic fixture; not a real source)
+[entry A]
+Atlas Example LLC manufactures air cargo containers. Email: sales@atlas.example
+[/entry A]
+[entry B]
+Boreal Example LLC distributes packaging. Email: sales@boreal.example
+[/entry B]

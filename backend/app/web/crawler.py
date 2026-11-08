@@ -12,6 +12,41 @@ from .html import page_content, rank_links
 from .observation import observation_context
 
 MAX_COMPANY_PAGES = 10
+# O3（spec 2.6 §4.2.3）：contacts 阶段页面预算按"拿到就停"，硬上限 3 页。
+# 不能纯按页数砍预算的是首页与两个 contact 链接；qualification 阶段维持 2 页。
+CONTACTS_PAGE_CAP = 3
+# O4：先读 sitemap.xml 定位 contact 路径，抓不到回落首页解析。
+_SITEMAP_LOC = re.compile(r'<loc>\s*([^<\s]+?)\s*</loc>', re.I)
+_SITEMAP_CONTACT_KEYWORDS = ('contact', 'kontakt', 'contacto', 'team', 'staff', 'about',
+                             'leadership', 'people', '联系', '团队', '关于')
+
+
+def _sitemap_contact_targets(website: str, allowed: set[str], delay: float) -> list[str]:
+    """读一次 /sitemap.xml，返回按 contact 相关度排序的同域路径（最多 2 条）。
+
+    任何失败（404 / 反爬 / 非法内容）都静默回落首页解析，不计数、不告警。
+    """
+    parsed = urlsplit(website)
+    origin = f'{parsed.scheme}://{parsed.netloc}'
+    try:
+        page = safe_http(origin + '/sitemap.xml', delay=delay, allowed_hosts=allowed)
+    except WebError:
+        return []
+    targets = []
+    for match in _SITEMAP_LOC.finditer(page.get('html') or ''):
+        candidate = _safe_website(match.group(1))
+        if not candidate or urlsplit(candidate).hostname not in allowed:
+            continue
+        if _restricted_url(candidate):
+            continue
+        path = unquote(urlsplit(candidate).path).casefold()
+        if not path or path == '/':
+            continue
+        score = next((index for index, word in enumerate(_SITEMAP_CONTACT_KEYWORDS)
+                      if word in path), len(_SITEMAP_CONTACT_KEYWORDS))
+        if score < len(_SITEMAP_CONTACT_KEYWORDS):
+            targets.append((score, len(path), candidate))
+    return [item[2] for item in sorted(set(targets))[:2]]
 
 
 def _safe_website(value: str, base_url: str = '', *, fixture=False) -> str:
@@ -57,6 +92,8 @@ def fetch_company(candidate: dict, segment: dict, *, fixture=False, max_pages=10
     limit = min(MAX_COMPANY_PAGES, max(0, int(max_pages)))
     if stage == 'qualification':
         limit = min(2, limit)
+    elif stage == 'contacts':
+        limit = min(CONTACTS_PAGE_CAP, limit)
     pages = deepcopy(list(initial_pages or [])[:limit])
     website = _safe_website(candidate.get('website_url') or '', fixture=fixture)
     if not website or not limit:
@@ -123,6 +160,7 @@ def fetch_company(candidate: dict, segment: dict, *, fixture=False, max_pages=10
                 enqueue_links(page, depth)
     if website not in seen:
         pending.insert(0, (website, 0))
+    sitemap_tried = False
     while pending and len(pages) < limit:
         url, depth = pending.pop(0)
         if url in seen:
@@ -151,5 +189,17 @@ def fetch_company(candidate: dict, segment: dict, *, fixture=False, max_pages=10
         seen.add(page['final_url'])
         if should_stop and should_stop(pages):
             break
+        # O4：首页必抓；仅当首页链接里没有任何 contact/team/about 线索时
+        # （典型如 JS 渲染导航），才尝试 sitemap.xml 定位路径，抓不到回落。
+        if (stage == 'contacts' and not fixture and not sitemap_tried and depth == 0
+                and not (should_stop and should_stop(pages))):
+            sitemap_tried = True
+            _, home_links, _ = page_content(page.get('html') or '', page['final_url'], tuple(allowed))
+            if not any(_company_link_priority(link, stage, segment)[0] < 3 for link in home_links):
+                targets = [(url, 1) for url in _sitemap_contact_targets(
+                    website, allowed, max(1, float(segment.get('rate_limit_seconds') or 2)))
+                    if url not in seen]
+                if targets:
+                    pending[0:0] = targets
         enqueue_links(page, depth)
     return pages

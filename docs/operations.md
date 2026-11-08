@@ -37,6 +37,26 @@ Windows 本地部署可将 PostgreSQL 二进制放在 `.runtime/pgsql/bin`、数
 
 status --action 支持 pause/resume/cancel/retry。取消和删除按明确用户指令执行；Skill 不在普通研究中自动删除记录。抑制和删除会撤销当前系统中的相关导出，已复制到系统外的文件由持有人管理。
 
+## 实时成果页面
+
+```powershell
+.\.venv\Scripts\python.exe scripts/b2b_leads.py live --run us-forwarders-01
+.\.venv\Scripts\python.exe scripts/b2b_leads.py live --run us-forwarders-01 --rebuild-only
+.\.venv\Scripts\python.exe scripts/b2b_leads.py live --run us-forwarders-01 --port 8765 --idle-timeout 3600
+```
+
+`live` 是用户主动启动的前台查看命令，不是采集或后台服务：
+
+- 启动时把已提交状态投影到 `<SCA_ARTIFACT_ROOT>/live/<run>/projection.json`，随后启动只绑定 `127.0.0.1` 的临时 HTTP 服务；端口默认由系统分配。
+- 标准输出打印一行 JSON（`url`、`host`、`port`、`expires_in_seconds`）。URL 含本次进程的随机令牌，只用于本机打开，不写日志；不要转发到外部文档或聊天。
+- 默认 30 分钟无活动自动退出，`--idle-timeout` 可调（30–86400 秒）；`Ctrl+C` 立即停止。`--open` 才调用默认浏览器，不会自动弹窗。
+- 页面只读：不采集、不改任务状态、不自动导出。导出按钮由命令把当前筛选交给核心，核心重新校验交付政策后返回真实文件、数量和快照时间。
+- 页面停止或断开时显示离线与最后更新时间；任务是否仍在运行只按已保存的真实状态说明，超过 120 秒没有新观察的“运行中”显示为未知。
+- 抑制、删除企业和过期清理会重建已保存页面；重建失败写入 `pending.json`，页面提示“可能已过期”。投影默认保留 30 天，`maintenance --apply` 只删除已知页面文件。
+- 对外访问控制：Host 只接受 `127.0.0.1`/`localhost` 加当前端口，POST 导出还要求同源 Origin 和 `X-Live-Request`；响应含严格 CSP，脚本样式随包提供，无 CDN。
+
+页面展示不等于交付：已确认可交付数量、待核实名单和正式导出都来自同一已提交核心选择；待核实企业不进入正式导出，公开渠道也不代表已实际验证送达。
+
 默认原始快照、导出、操作审计保留 30 天，企业及终态任务输入 365 天；B2B_RAW_RETENTION_DAYS / B2B_EXPORT_RETENTION_DAYS / B2B_LOG_RETENTION_DAYS / B2B_CONTACT_RETENTION_DAYS 可覆盖。备份有独立保留周期。
 
 ## 备份恢复

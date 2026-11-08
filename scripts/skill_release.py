@@ -31,7 +31,9 @@ def atomic_write(path, data):
 
 def source_files(root):
     files = set()
-    for folder, patterns in (("backend/app", ("*.py",)), ("backend/migrations", ("*.py",)),
+    for folder, patterns in (("backend/app", ("*.py",)),
+                             ("backend/app/live/assets", ("*.html", "*.css", "*.js")),
+                             ("backend/migrations", ("*.py",)),
                              ("scripts", ("*.py", "*.ps1")),
                              ("skills/b2b-leads", ("*.md", "*.py", "*.yaml"))):
         for pattern in patterns:

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from email.utils import parsedate_to_datetime
 import http.client
+import logging
 import math
 import re
 import socket
@@ -27,6 +28,94 @@ _host_locks = defaultdict(threading.Lock)
 _last_request = {}
 _blocked_until = {}
 _robots_cache = {}
+
+# O2 连接复用（spec 2.6 §4.2.3）：同源 keep-alive 连接池，省掉重复 DNS+TLS 建连。
+# 键为 (scheme, host, port, pinned_address)；同域请求被 _host_locks 串行化，
+# 因此每个池化连接同一时刻至多被一个线程持有。只复用完整读毕且服务端未声明
+# 关闭的连接；陈旧连接复用失败时用全新连接重试一次（仅传输层，未收到任何
+# 响应字节，不构成数据级隐式重试）。
+_connection_pool = {}
+_pool_lock = threading.Lock()
+_POOL_MAX_PER_ORIGIN = 2
+_POOL_IDLE_SECONDS = 60.0
+
+# O5 域名级熔断，三级作用域（spec 2.6 §4.2.3 / 硬规矩 #5）：
+#   页级    单个 URL   本次 run 内不重试（seen 集合 + 失败页保留）
+#   域名级  该域名其余路径  本次 run 内跳过（进程内状态）
+#   全局    该域名     24 小时，写日志并持久化到 durable host limiter
+# 永久不跳过任何域名：24 小时冷却到期自动恢复，除非人工加 suppress。
+_DOMAIN_FAILURE_LIMIT = 3
+_DOMAIN_BREAKER_CODES = {'CONNECTION_ERROR', 'NETWORK_TIMEOUT'}
+_domain_failures = defaultdict(int)
+_domain_open_until = {}
+_breaker_log = logging.getLogger('b2b.research.breaker')
+
+
+def domain_breakers():
+    """当前进程内的域名熔断状态（供 status/诊断读取）。"""
+    return {host: {'consecutive_failures': count, 'open': host in _domain_open_until}
+            for host, count in _domain_failures.items() if count or host in _domain_open_until}
+
+
+def _trip_domain_breaker(host):
+    _domain_open_until[host] = float('inf')
+    _breaker_log.warning('domain circuit OPEN: %s after %d consecutive failures; '
+                         'rest of this run skips it, durable 24h cooldown requested', host,
+                         _DOMAIN_FAILURE_LIMIT)
+    limiter = current_host_limiter()
+    if limiter is not None:
+        try:
+            # token=None：不触碰任何在途租约，只持久化 24 小时 blocked_until。
+            _limit_call(limiter, 'release', {'host': host, 'token': None, 'retry_after_s': 86400})
+        except WebError:
+            _breaker_log.warning('durable cooldown persist failed for %s; in-run breaker stays open', host)
+
+
+def _record_domain_failure(host, error):
+    if error.code not in _DOMAIN_BREAKER_CODES and not (error.code == 'HTTP_ERROR' and error.retryable):
+        return
+    _domain_failures[host] += 1
+    if _domain_failures[host] >= _DOMAIN_FAILURE_LIMIT:
+        _trip_domain_breaker(host)
+
+
+def _domain_breaker_open(host):
+    until = _domain_open_until.get(host)
+    return until is not None and time.monotonic() < until
+
+
+def _pool_key(parsed, address):
+    return (parsed.scheme, parsed.hostname, parsed.port, address)
+
+
+def _take_pooled_connection(key):
+    with _pool_lock:
+        entry = _connection_pool.get(key)
+        while entry:
+            connection, created = entry.pop(0)
+            if not entry:
+                _connection_pool.pop(key, None)
+            if created >= time.monotonic() - _POOL_IDLE_SECONDS and getattr(connection, 'sock', None):
+                return connection, True
+            # 过期或断开的池化连接直接丢弃。
+            try:
+                connection.close()
+            except OSError:
+                pass
+        return None, False
+
+
+def _give_pooled_connection(key, connection):
+    with _pool_lock:
+        entries = _connection_pool.setdefault(key, [])
+        if len(entries) >= _POOL_MAX_PER_ORIGIN:
+            try:  # 池满：不持有引用，直接关闭避免泄漏。
+                connection.close()
+            except OSError:
+                pass
+            return
+        entries.append((connection, time.monotonic()))
+
 
 
 @contextmanager
@@ -53,83 +142,179 @@ def utc_now():
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, host: str, port: int, address: str, timeout: float = 12):
-        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
-        self._public_address = address
+    def __init__(self, host: str, port: int, addresses, timeout: float = 12):
+        # certifi CA 兜底：Windows 的 OpenSSL 默认信任库缺部分 EU 机构链
+        # （如 ec.europa.eu）；certifi 已是锁定依赖。certifi 缺失时回落默认。
+        try:
+            import certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            context = ssl.create_default_context()
+        super().__init__(host, port, timeout=timeout, context=context)
+        if isinstance(addresses, str):
+            addresses = [addresses]
+        self._public_addresses = [address for address in addresses if address]
+        self._connected_address = None
 
     def connect(self):
-        connection = socket.create_connection((self._public_address, self.port), self.timeout)
-        try:
-            self.sock = self._context.wrap_socket(connection, server_hostname=self.host)
-        except BaseException:
-            connection.close()
-            raise
+        # DNS 固定仍然成立：只连校验过的公开 IP 列表；CDN 首个 IP 不可达时
+        # 依次尝试其余地址，绝不重新解析主机名。
+        last_error = None
+        for address in self._public_addresses:
+            try:
+                connection = socket.create_connection((address, self.port), self.timeout)
+            except OSError as error:
+                last_error = error
+                continue
+            try:
+                self.sock = self._context.wrap_socket(connection, server_hostname=self.host)
+                self._connected_address = address
+                return
+            except BaseException:
+                connection.close()
+                raise
+        raise last_error or OSError('no validated address')
 
 
-def _open_pinned(url: str, addresses: list[str], method: str = 'GET', body: bytes | None = None) -> tuple[int, dict, bytes]:
-    """No environment proxies or implicit redirects; never resolve the hostname again."""
+def _new_pinned_connection(parsed, addresses: list[str], connect_timeout: float):
+    """One factory for both schemes; every validated address is a fallback.
+
+    HTTPS uses the subclassed connection below. Plain HTTP keeps the concrete
+    ``http.client.HTTPConnection`` class so callers (and tests) can substitute
+    the transport, but its ``connect`` is bound to the same address list. The
+    host name is never resolved again on either path.
+    """
+    public = [address for address in addresses if address]
+    if parsed.scheme == 'https':
+        return _PinnedHTTPSConnection(parsed.hostname, parsed.port or 443, public,
+                                      timeout=connect_timeout)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 80,
+                                            timeout=connect_timeout)
+    connection._public_addresses = public
+    connection._connected_address = None
+
+    def connect():
+        last_error = None
+        for address in public:
+            try:
+                connection.sock = socket.create_connection((address, connection.port),
+                                                           connection.timeout)
+                connection._connected_address = address
+                return
+            except OSError as error:
+                last_error = error
+                continue
+        raise last_error or OSError('no validated address')
+
+    connection.connect = connect
+    return connection
+
+
+def _open_pinned(url: str, addresses: list[str], method: str = 'GET', body: bytes | None = None,
+                 extra_headers: dict | None = None) -> tuple[int, dict, bytes]:
+    """No environment proxies or implicit redirects; never resolve the hostname again.
+
+    O2 连接复用：优先取同源池化 keep-alive 连接；复用失败且尚未收到任何
+    响应字节时，用全新连接重试一次（仅传输层，服务器关闭陈旧连接的正常
+    现象，不构成数据级隐式重试）。响应完整读毕且服务端未声明关闭时归还
+    连接池。
+    """
     budget = remaining_seconds()
     if budget is not None and budget <= 0:
         raise WebError('DEADLINE_EXCEEDED', '命令剩余时间不足以发送请求', retryable=True)
     connect_timeout = 12 if budget is None else max(0.5, min(12, budget))
     parsed = urlsplit(url)
-    if parsed.scheme == 'https':
-        connection = _PinnedHTTPSConnection(parsed.hostname, parsed.port or 443, addresses[0], timeout=connect_timeout)
-    else:
-        connection = http.client.HTTPConnection(addresses[0], parsed.port or 80, timeout=connect_timeout)
+    pool_key = _pool_key(parsed, tuple(addresses))
+    request_target = parsed.path + ('?' + parsed.query if parsed.query else '')
     headers = {'User-Agent': USER_AGENT, 'Accept': 'text/html,text/plain,text/csv,application/json',
-               'Accept-Encoding': 'identity', 'Host': parsed.netloc, 'Connection': 'close'}
+               'Accept-Encoding': 'identity', 'Host': parsed.netloc, 'Connection': 'keep-alive'}
     if body is not None:
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
-    timed_out = threading.Event()
-    active_socket = []
+    headers.update({str(key): str(value) for key, value in (extra_headers or {}).items()
+                    if str(key).casefold() not in {'host', 'user-agent', 'connection', 'accept-encoding'}})
+    read_deadline = time.monotonic() + (min(20, budget) if budget is not None else 20)
+    last_transport_error = None
+    for attempt in range(2):
+        connection, reused = None, False
+        if attempt == 0:
+            connection, reused = _take_pooled_connection(pool_key)
+            if connection is None:
+                continue
+        else:
+            connection = _new_pinned_connection(parsed, addresses, connect_timeout)
+        timed_out = threading.Event()
+        active_socket = []
 
-    def abort_slow_response():
-        # A socket read timeout alone can be defeated by an endless slow drip.
-        timed_out.set()
-        current_socket = active_socket[0] if active_socket else getattr(connection, 'sock', None)
-        if current_socket is not None:
-            try:
-                current_socket.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-        connection.close()
+        def abort_slow_response():
+            # A socket read timeout alone can be defeated by an endless slow drip.
+            timed_out.set()
+            current_socket = active_socket[0] if active_socket else getattr(connection, 'sock', None)
+            if current_socket is not None:
+                try:
+                    current_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            connection.close()
 
-    timer = threading.Timer(30 if budget is None else max(1.0, min(30.0, budget)), abort_slow_response)
-    timer.daemon = True
-    timer.start()
-    try:
-        connection.request(method, parsed.path + ('?' + parsed.query if parsed.query else ''), body, headers)
-        if getattr(connection, 'sock', None) is not None:
-            active_socket.append(connection.sock)
-        response = connection.getresponse()
-        response_headers = {key.lower(): value for key, value in response.getheaders()}
-        if response_headers.get('content-encoding', 'identity').lower() not in ('', 'identity'):
-            raise WebError('UNSUPPORTED_CONTENT', '来源返回压缩内容，本安全采集器只接受有界原文响应')
-        length = response_headers.get('content-length', '')
-        if length.isdigit() and int(length) > MAX_RESPONSE_BYTES:
-            raise WebError('CONTENT_TOO_LARGE', '来源响应超过 2 MiB 上限')
-        chunks, size, deadline = [], 0, time.monotonic() + min(20, budget) if budget is not None else time.monotonic() + 20
-        while True:
-            if time.monotonic() > deadline:
-                raise WebError('NETWORK_TIMEOUT', '来源响应超过时间上限')
-            chunk = response.read1(min(65536, MAX_RESPONSE_BYTES + 1 - size))
-            size += len(chunk)
-            if size > MAX_RESPONSE_BYTES:
+        timer = threading.Timer(30 if budget is None else max(1.0, min(30.0, budget)), abort_slow_response)
+        timer.daemon = True
+        timer.start()
+        response = None
+        try:
+            connection.request(method, request_target, body, headers)
+            if getattr(connection, 'sock', None) is not None:
+                active_socket.append(connection.sock)
+            response = connection.getresponse()
+            response_headers = {key.lower(): value for key, value in response.getheaders()}
+            if response_headers.get('content-encoding', 'identity').lower() not in ('', 'identity'):
+                raise WebError('UNSUPPORTED_CONTENT', '来源返回压缩内容，本安全采集器只接受有界原文响应')
+            length = response_headers.get('content-length', '')
+            if length.isdigit() and int(length) > MAX_RESPONSE_BYTES:
                 raise WebError('CONTENT_TOO_LARGE', '来源响应超过 2 MiB 上限')
-            chunks.append(chunk)
-            if not chunk:
-                break
-        if timed_out.is_set():
-            raise WebError('NETWORK_TIMEOUT', '来源整次网络请求超过 30 秒上限')
-        return response.status, response_headers, b''.join(chunks)
-    except (OSError, http.client.HTTPException) as error:
-        if timed_out.is_set():
-            raise WebError('NETWORK_TIMEOUT', '来源整次网络请求超过 30 秒上限', retryable=True) from error
-        raise WebError('CONNECTION_ERROR', '公开来源网络连接失败', retryable=True) from error
-    finally:
-        timer.cancel()
-        connection.close()
+            chunks, size = [], 0
+            while True:
+                if time.monotonic() > read_deadline:
+                    raise WebError('NETWORK_TIMEOUT', '来源响应超过时间上限')
+                chunk = response.read1(min(65536, MAX_RESPONSE_BYTES + 1 - size))
+                size += len(chunk)
+                if size > MAX_RESPONSE_BYTES:
+                    raise WebError('CONTENT_TOO_LARGE', '来源响应超过 2 MiB 上限')
+                chunks.append(chunk)
+                if not chunk:
+                    break
+            if timed_out.is_set():
+                raise WebError('NETWORK_TIMEOUT', '来源整次网络请求超过 30 秒上限')
+            data = b''.join(chunks)
+            status = response.status
+            # 完整读毕才归还连接；服务端声明关闭或异常路径一律不归还。
+            if response.will_close:
+                connection.close()
+            else:
+                _give_pooled_connection(pool_key, connection)
+            return status, response_headers, data
+        except WebError:
+            connection.close()
+            raise
+        except (OSError, http.client.HTTPException) as error:
+            connection.close()
+            if timed_out.is_set():
+                raise WebError('NETWORK_TIMEOUT', '来源整次网络请求超过 30 秒上限', retryable=True) from error
+            # 仅当复用的陈旧连接在收到响应前失败，才用全新连接重试一次。
+            if reused and response is None and attempt == 0:
+                last_transport_error = error
+                continue
+            raise WebError('CONNECTION_ERROR', '公开来源网络连接失败', retryable=True) from error
+        finally:
+            timer.cancel()
+            # 成功且连接已归还池中的情况由归还逻辑接管；其余路径兜底关闭。
+            if connection is not None and (response is None or timed_out.is_set()):
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+    if last_transport_error is not None:
+        raise WebError('CONNECTION_ERROR', '公开来源网络连接失败', retryable=True) from last_transport_error
+    raise WebError('CONNECTION_ERROR', '公开来源网络连接失败', retryable=True)
 
 
 def _observed_getaddrinfo(*args, **kwargs):
@@ -197,7 +382,8 @@ def _durable_reservation(host, delay):
         _limit_call(limiter, 'release', {'host': host, 'token': token, **outcome})
 
 
-def _rate_limited_request(url: str, *, delay: float, method: str = 'GET', body: bytes | None = None):
+def _rate_limited_request(url: str, *, delay: float, method: str = 'GET', body: bytes | None = None,
+                          headers: dict | None = None):
     normalized, addresses = validate_public_url(url)
     host = urlsplit(normalized).hostname
     with _host_locks[host]:
@@ -229,17 +415,20 @@ def _rate_limited_request(url: str, *, delay: float, method: str = 'GET', body: 
                 # Anchor the local fallback immediately before dispatch too.
                 _last_request[host] = time.monotonic()
                 observed['dispatched'] = True
-                status, headers, data = _open_pinned(normalized, addresses, method, body)
+                if headers:
+                    status, response_headers, data = _open_pinned(normalized, addresses, method, body, headers)
+                else:
+                    status, response_headers, data = _open_pinned(normalized, addresses, method, body)
                 observed.update(http_status=status, response_bytes=len(data))
                 if status == 429:
-                    retry_seconds = retry_after_seconds(headers.get('retry-after'))
+                    retry_seconds = retry_after_seconds(response_headers.get('retry-after'))
                     _blocked_until[host] = time.monotonic() + retry_seconds
                     # The reservation releases only after this cooldown commits.
                     outcome['retry_after_s'] = retry_seconds
         if status == 429:
             raise WebError('RATE_LIMITED', '来源限流，停止请求等待恢复', retryable=True,
                            retry_after_s=retry_seconds, upstream_status=429)
-    return normalized, status, headers, data
+    return normalized, status, response_headers, data
 
 
 def _robots_rule(url: str, delay: float) -> float:
@@ -287,9 +476,14 @@ def _restricted_url(url: str) -> bool:
 
 
 def safe_http(url: str, *, delay: float = 2, allowed_hosts: set[str] | None = None,
-              method: str = 'GET', body: bytes | None = None) -> dict:
+              method: str = 'GET', body: bytes | None = None,
+              headers: dict | None = None) -> dict:
     """Check robots and public DNS for every hop and connect only to that validated IP."""
     current = normalize_url(url)
+    entry_host = urlsplit(current).hostname
+    if _domain_breaker_open(entry_host):
+        raise WebError('DOMAIN_CIRCUIT_OPEN', '该域名本次运行内已熔断，不再抓取其余路径')
+    extra = {str(key): str(value) for key, value in (headers or {}).items()}
     for hop in range(MAX_REDIRECTS + 1):
         current_host = urlsplit(current).hostname
         if allowed_hosts and current_host not in allowed_hosts:
@@ -297,7 +491,13 @@ def safe_http(url: str, *, delay: float = 2, allowed_hosts: set[str] | None = No
         if _restricted_url(current):
             raise WebError('LOGIN_REQUIRED', '登录 / 私密 / 验证页面不采集')
         actual_delay = _robots_rule(current, max(1, float(delay)))
-        current, status, headers, raw = _rate_limited_request(current, delay=actual_delay, method=method, body=body)
+        try:
+            current, status, headers, raw = _rate_limited_request(current, delay=actual_delay,
+                                                                  method=method, body=body, headers=extra)
+        except WebError as error:
+            _record_domain_failure(entry_host, error)
+            raise
+        _domain_failures.pop(entry_host, None)
         if status in (301, 302, 303, 307, 308):
             if hop == MAX_REDIRECTS or not headers.get('location'):
                 raise WebError('REDIRECT_LIMIT', '跳转次数超限或缺少目标')
@@ -313,7 +513,8 @@ def safe_http(url: str, *, delay: float = 2, allowed_hosts: set[str] | None = No
             raise WebError('HTTP_ERROR', f'来源返回 HTTP {status}', retryable=status >= 500)
         content_type = headers.get('content-type', 'text/html').lower()
         if not any(part in content_type for part in ('html', 'text/plain', 'text/csv', 'application/csv',
-                                                     'application/json', 'application/octet-stream')):
+                                                     'application/json', 'application/octet-stream',
+                                                     'xml')):  # xml：sitemap 定位（O4）
             raise WebError('UNSUPPORTED_CONTENT', '当前适配器仅解析公开 HTML / 文本 / CSV / JSON')
         charset = re.search(r'charset=([\w-]+)', content_type)
         encoding = charset.group(1) if charset else 'utf-8-sig'

@@ -1,251 +1,26 @@
-"""Durable batch application service. No network request holds a database lock."""
-from collections import Counter
-from copy import deepcopy
-from datetime import timedelta
+"""状态机、阶段推进、任务派发、checkpoint 与批次管理命令（spec 2.6 拆分目标 runs/state.py）。"""
 import hashlib
 import json
 import logging
 import os
-import re
 import threading
 import time
+from copy import deepcopy
+from datetime import timedelta
 from urllib.parse import urlsplit
-
 from sqlalchemy import delete, select
 from app.config import settings
-from app.capabilities import LIMITS, METRICS_VERSION
+from app.capabilities import LIMITS
 from app.errors import AppError
 from app.failures import classify, is_circuit_failure
 from app.release import release_identity
 from app.persistence.host_limits import limit as host_limit
-from app.persistence import (transaction, utcnow, uid, put, artifact_path, observation_sink,
-                             queue_artifact_delete, drain_pending_deletes)
-from app.persistence.models import Run, Job, Company, Snapshot, Suppression, Export, Operation, Observation, Audit, MaintenanceState
-from app.schemas import parse_segment, spec_version
-
-
-def _hash(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str,
-                                    separators=(',', ':')).encode()).hexdigest()
-
-
-def _iso(value):
-    return value.isoformat() if value else None
-
-
-def _run(session, run_id):
-    row = session.get(Run, run_id, with_for_update=True)
-    if row is None:
-        raise AppError('NOT_FOUND', '批次不存在', 404)
-    return row
-
-
-def _version(run, expected):
-    if expected is not None and run.version != expected:
-        raise AppError('VERSION_CONFLICT', '批次已更新，请读取最新状态', 409)
-
-
-def _audit(session, run_id, action, **details):
-    session.add(Audit(id=uid('audit'), run_id=run_id, action=action, details_json=details))
-
-
-def _delivery_lock(session):
-    # Always acquire before a Run lock: selection, suppression and file
-    # revocation must be one serial order, including an export being encoded.
-    from sqlalchemy import text
-    session.execute(text('SELECT pg_advisory_xact_lock(7334003)'))
-
-
-def _operation(session, run, command, key, request):
-    if not isinstance(key, str) or not 1 <= len(key) <= 160:
-        raise AppError('INVALID_KEY', '操作键必须为 1 至 160 字符')
-    old = session.scalar(select(Operation).where(Operation.run_id == run.id,
-        Operation.command == command, Operation.key == key))
-    digest = _hash(request)
-    if old and old.request_hash != digest:
-        raise AppError('IDEMPOTENCY_CONFLICT', '同一操作键不能用于不同输入', 409)
-    if old:
-        return old, True
-    row = Operation(id=uid('op'), run_id=run.id, command=command, key=key,
-                    request_hash=digest, result_json={})
-    session.add(row)
-    session.flush()
-    return row, False
-
-
-def _rows(session, run):
-    return [deepcopy(row.data_json) for row in session.scalars(
-        select(Company).where(Company.run_id == run.id).order_by(Company.created_at, Company.id))]
-
-
-def _suppression_view(row):
-    return dict(id=row.id, type=row.type, value=row.value, reason=row.reason, created_at=_iso(row.created_at))
-
-
-def _suppressions(session, spec=None):
-    result = [_suppression_view(row) for row in session.scalars(select(Suppression))]
-    for value in (spec or {}).get('exclusions', []):
-        kind = 'email' if '@' in value else 'phone' if value.startswith('+') else 'domain' if '.' in value and ' ' not in value else 'company'
-        result.append(dict(type=kind, value=value, reason='客群排除名单'))
-    return result
-
-
-def _elapsed(run, now=None):
-    return run.active_seconds + (max(0, ((now or utcnow()) - run.active_started_at).total_seconds())
-        if run.status == 'running' and run.active_started_at else 0)
-
-
-def _settle(run, now=None):
-    run.active_seconds = _elapsed(run, now)
-    run.active_started_at = None
-
-
-def _summary(session, run, now=None):
-    from app.delivery.selection import delivery_companies, filter_companies
-    now = now or utcnow()
-    rows = _rows(session, run)
-    version = spec_version(run.spec_json)
-    policy = ((run.spec_json.get('qualification_policy') or {}).get('contact_policy')
-              if version == 2 else None)
-    identity = 'v2' if version == 2 else 'legacy'
-    freshness = run.spec_json.get('freshness_days', 180)
-    common = dict(suppressions=_suppressions(session, run.spec_json), freshness_days=freshness, now=now)
-    qualified_rows = [row for row in rows if row.get('qualification', {}).get('decision') == 'qualified']
-    qualified = filter_companies(qualified_rows, mode='max_coverage', identity_version=identity, **common)
-    contactable = delivery_companies(rows, policy=policy, identity_version=identity, **common)
-    states = Counter(session.scalars(select(Job.state).where(Job.run_id == run.id)))
-    next_available = session.scalar(select(Job.available_at).where(Job.run_id == run.id,
-        Job.state == 'queued').order_by(Job.available_at).limit(1))
-    decisions = Counter(row.get('qualification', {}).get('decision', 'uncertain') for row in rows)
-    state = deepcopy(run.plan_json['research'])
-    state.update(active_wall_seconds=round(_elapsed(run, now), 3), qualified_count=len(qualified),
-        contactable_count=len(contactable), goal_count=len(contactable),
-        target_quantity=run.spec_json['quantity'], shortfall=max(0, run.spec_json['quantity'] - len(contactable)),
-        discovered=state['admitted_count'], matched=len(qualified), excluded=decisions['excluded'],
-        uncertain=decisions['uncertain'], missing=max(0, len(qualified) - len(contactable)),
-        processing=bool(run.process_token and run.process_until and run.process_until > now),
-        queued=states['queued'], running=states['running'], failed=states['failed'],
-        processed=states['completed'], skipped=states['skipped'],
-        spec_version=version, identity_version=identity,
-        qualified_by_origin=deepcopy(run.stats_json.get('qualified_by_origin') or {}),
-        append_ready=run.stats_json.get('append_ready'),
-        discovery_seen=run.stats_json.get('discovery_seen'),
-        missing_items=_missing_items(rows),
-        next_retry_at=_iso(next_available) if next_available and next_available > now else None)
-    return state
-
-
-def _missing_items(rows):
-    """Bounded, non-identifying summary of field/channel gaps for reporting."""
-    counter = Counter()
-    for row in rows:
-        qualification = row.get('qualification') or {}
-        if qualification.get('decision') == 'qualified' and row.get('status') != 'qualified':
-            for item in list(qualification.get('missing') or [])[:20]:
-                counter['condition:' + str(item.get('field') or item.get('id') or 'unknown')] += 1
-            for name in (row.get('channel_policy') or {}).get('missing') or []:
-                counter['channel:' + str(name)] += 1
-        elif qualification.get('decision') == 'uncertain':
-            for item in list(qualification.get('missing') or [])[:20]:
-                counter['condition:' + str(item.get('field') or item.get('id') or 'unknown')] += 1
-    return dict(sorted(counter.items()))
-
-
-def _refresh(session, run, now=None):
-    now = now or utcnow()
-    session.flush()
-    research = _summary(session, run, now)
-    plan = deepcopy(run.plan_json)
-    state = plan['research']
-    stop = ('goal_reached' if research['goal_count'] >= run.spec_json['quantity'] else
-            'time_limit' if research['active_wall_seconds'] >= state['time_limit_seconds'] else
-            'candidate_limit' if state['admitted_count'] >= state['candidate_limit'] else None)
-    if stop and run.status in {'running', 'paused'}:
-        state['input_open'] = False
-        state['stop_reason'] = stop
-        if stop in {'goal_reached', 'time_limit'}:
-            for job in session.scalars(select(Job).where(Job.run_id == run.id, Job.state == 'queued')):
-                job.state = 'skipped'
-    # Persist the latest projection so snapshot decisions do not need to
-    # recompute the whole delivery cohort on every completion.
-    state['contactable_count'] = research['contactable_count']
-    state['qualified_count'] = research['qualified_count']
-    state['missing_items'] = research['missing_items']
-    session.flush()
-    pending = session.scalar(select(Job.id).where(Job.run_id == run.id, Job.state.in_(['queued', 'running'])).limit(1))
-    if run.status == 'running' and not state['input_open'] and not pending:
-        _settle(run, now)
-        run.status = 'completed' if research['goal_count'] >= run.spec_json['quantity'] else 'partial'
-        run.finished_at = now
-        run.version += 1
-    run.plan_json = plan
-
-
-def _view(session, run):
-    research = _summary(session, run)
-    stats = {**deepcopy(run.stats_json), **{key: research[key] for key in
-        ('discovered', 'processed', 'failed', 'qualified_count', 'contactable_count', 'shortfall')}}
-    summary = {key: research[key] for key in ('discovered', 'matched', 'excluded', 'uncertain', 'missing')}
-    summary.update(contactable=research['contactable_count'], target_quantity=research['target_quantity'],
-                   target_shortfall=research['shortfall'])
-    version = spec_version(run.spec_json)
-    result = dict(id=run.id, run_id=run.id, batch_id=run.id, name=run.spec_json['name'],
-        status=run.status, version=run.version, segment=deepcopy(run.spec_json), spec=deepcopy(run.spec_json),
-        plan=deepcopy(run.plan_json), research=research, checkpoint=research['checkpoint'],
-        summary=summary, stats=stats, demo_only=run.demo_only, errors=deepcopy(run.errors_json),
-        input_closed=not research['input_open'],
-        requires_more_processing=bool(research['queued'] or research['running']),
-        external_tool_usage=deepcopy(research['external_tool_usage']),
-        spec_version=version,
-        created_at=_iso(run.created_at), updated_at=_iso(run.updated_at), finished_at=_iso(run.finished_at))
-    if version == 2:
-        from app.rules.policy import policy_summary
-        result['policy'] = policy_summary(run.spec_json)
-        result['evidence_policy'] = deepcopy(run.spec_json.get('evidence_policy'))
-        result['execution_policy'] = deepcopy(run.spec_json.get('execution_policy'))
-    return result
-
-
-def create(run_id, spec, **kwargs):
-    if not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', run_id):
-        raise AppError('INVALID_RUN_ID', 'run 仅支持 1 至 80 位字母、数字、点、横线和下划线')
-    spec, version = parse_segment(spec)
-    with transaction() as session:
-        # Lock even before the row exists to serialize concurrent create calls.
-        from sqlalchemy import text
-        session.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key': 'run:' + run_id})
-        old = session.get(Run, run_id, with_for_update=True)
-        if old:
-            if old.spec_hash != _hash(spec):
-                raise AppError('IDEMPOTENCY_CONFLICT', '该 run 已用于不同客群', 409)
-            return _view(session, old)
-        plan = {'execution_mode': 'skill_research', 'completion_goal': 'contactable',
-            'page_limit_per_company': 10, 'page_limit_total': 10000,
-            'request_observation_protocol': 'observed-2', 'lookup_observation_protocol': 'observed-2',
-            'timing_protocol': 'observed-1', 'release': release_identity(),
-            'spec_version': version,
-            'research': {'input_open': True, 'candidate_limit': spec['quantity'] * 3,
-            'time_limit_seconds': 28800, 'admitted_count': 0, 'checkpoint': {}, 'external_tool_usage': {},
-            'stop_reason': None}}
-        if version == 2:
-            from app.rules.policy import policy_summary
-            plan['rules_version'] = policy_summary(spec)['rule_version']
-            plan['evidence_version'] = (spec.get('evidence_policy') or {}).get('evidence_version')
-            plan['execution'] = {**(spec.get('execution_policy') or {}), 'circuit': {'open': False}}
-        run = Run(id=run_id, spec_json=spec, spec_hash=_hash(spec), demo_only=settings.fixture_mode,
-            active_started_at=utcnow(), plan_json=plan,
-            stats_json={'pages': 0, 'duplicates': 0, 'active_seconds': 0, 'paused_seconds': 0})
-        session.add(run)
-        session.flush()
-        _audit(session, run.id, 'run.created', spec_version=version,
-               spec_hash=run.spec_hash, rules_version=plan.get('rules_version'),
-               release=plan['release'])
-        return _view(session, run)
-
-
-def _identity(candidate, version=2):
-    from app.rules.identity import identity_key
-    return identity_key(candidate, version=version)
+from app.persistence import (transaction, utcnow, uid, put, artifact_path, observation_sink, queue_artifact_delete, drain_pending_deletes)
+from app.persistence.models import (Run, Job, Company, Snapshot, Suppression, Export, Operation, Observation, Audit, MaintenanceState)
+from app.schemas import spec_version
+from ._core import (_hash, _iso, _run, _version, _audit, _delivery_lock, _operation, _rows, _suppression_view, _suppressions, _elapsed, _settle, _refresh, _refresh_light, _view, _list_view, _live_refresh, _live_signature, _live_remember, _live_forget, _live_refresh_existing, datetime_from)
+from .create import (_identity)
+from .query import (export, _revoke_exports)
 
 
 def append(run_id, candidates, chunk_id=None, checkpoint=None, external_tool_usage=None,
@@ -264,7 +39,9 @@ def append(run_id, candidates, chunk_id=None, checkpoint=None, external_tool_usa
         _version(run, expected_version)
         if run.status not in {'running', 'paused'}:
             raise AppError('INVALID_STATE', '批次已结束，不能追加候选', 409)
-        _refresh(session, run)
+        # Admission needs only persisted stop/budget counters. A full delivery
+        # selection here would be repeated again after the commit.
+        _refresh_light(session, run)
         state = deepcopy(run.plan_json['research'])
         version = spec_version(run.spec_json)
         admission = dict(accepted=0, duplicates=0, skipped=0, append_ready=0,
@@ -368,37 +145,17 @@ def append(run_id, candidates, chunk_id=None, checkpoint=None, external_tool_usa
                  'discovery_seen': (run.stats_json.get('discovery_seen') or 0) + len(candidates)}
         run.stats_json = stats
         run.version += 1
-        _refresh(session, run)
-        result = {**_view(session, run), 'admission': admission}
+        context = _refresh(session, run, detail=True)
+        detail = context.summary(True).get('_detail')
+        signature = _live_signature(session, run.id)
+        result = {**_view(session, run, context=context), 'admission': admission}
         operation.result_json = result
         _audit(session, run.id, 'run.append', **admission)
-        return result
-
-
-def validate_input(spec_payload, input_payload):
-    """Per-record offline precheck. No database, HTTP, DNS or maintenance."""
-    from app.capabilities import RULE_VERSION
-    from app.pipeline import precheck_candidate
-    from app.schemas import ResearchInput
-    spec, version = parse_segment(spec_payload or {})
-    body = ResearchInput.model_validate(input_payload or {})
-    records, submittable = [], []
-    for index, value in enumerate(body.candidates):
-        try:
-            candidate = precheck_candidate(value, spec, index=index)
-        except AppError as error:
-            records.append({'index': index, 'admissible': False, 'reason_code': error.code,
-                            'path': error.details.get('path') or f'candidates[{index}]',
-                            'message': error.message, 'normalized_hash': None})
-            continue
-        records.append({'index': index, 'admissible': True, 'reason_code': None, 'path': None,
-                        'message': None, 'normalized_hash': _hash(candidate)})
-        submittable.append(index)
-    return {'spec_version': version, 'rule_version': RULE_VERSION if version == 2 else None,
-            'records': records, 'submittable_indexes': submittable,
-            'counts': {'input': len(body.candidates), 'append_ready': len(submittable),
-                       'rejected': len(body.candidates) - len(submittable)},
-            'network_requests': 0, 'database_writes': 0}
+    if detail is not None:
+        # The page reuses the same revision's selection; do not select again.
+        _live_remember(run_id, signature, detail)
+    _live_refresh(run_id)
+    return result
 
 
 def advance(run_id, payload, chunk_id=None, max_jobs=20, max_seconds=60, workers=None, resume=False):
@@ -496,8 +253,11 @@ def status(run_id, action=None, expected_version=None):
         if action:
             _version(run, expected_version)
             _action(session, run, action)
-        _refresh(session, run)
-        return _view(session, run)
+        context = _refresh(session, run)
+        answer = _view(session, run, context=context)
+    if action:
+        _live_refresh(run_id)
+    return answer
 
 
 def _reclaim_expired(session, run, job, now, force_unknown=False):
@@ -555,7 +315,9 @@ def _claim(run_id, token, workers=1):
         execution = run.plan_json.get('execution') or {}
         if (execution.get('circuit') or {}).get('open'):
             return None
-        _refresh(session, run, now)
+        # Claim is the hottest coordinator path. It must not run a full
+        # delivery selection just to read stop/budget counters.
+        _refresh_light(session, run, now)
         if run.status != 'running':
             return None
         job = session.scalar(select(Job).where(Job.run_id == run.id, Job.state == 'queued',
@@ -581,7 +343,7 @@ def _claim(run_id, token, workers=1):
             for queued in session.scalars(select(Job).where(Job.run_id == run.id, Job.state == 'queued')):
                 queued.state = 'skipped'
             run.plan_json = plan
-            _refresh(session, run, now)
+            _refresh_light(session, run, now)
             return None
         if job.available_at:
             stats['queue_wait_seconds'] = stats.get('queue_wait_seconds', 0) + max(
@@ -631,6 +393,49 @@ def _before_send(task):
                     or not job.lease_until or job.lease_until <= utcnow():
                 raise AppError('LEASE_REVOKED', '任务租约已撤销，停止后续官网请求', 409)
     return guard
+
+
+def _batch_projection_enabled():
+    """Runtime rollback switch; it changes projection timing, never delivery."""
+    return os.getenv('B2B_BATCH_PROJECTION', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+
+
+def _checkpoint_projection(run_id, *, min_pending=None, force=False):
+    """Build one detail projection for a batch of completion events.
+
+    Returns True when a projection was built. Without a pending completion the
+    caller pays nothing, so claim and idle coordinator loops stay light.
+    """
+    with transaction() as session:
+        run = _run(session, run_id)
+        stats = run.stats_json or {}
+        pending = stats.get('projection_pending') or {}
+        count = int(pending.get('count') or 0)
+        if not force and not count:
+            return None
+        if not force and min_pending is not None and count < int(min_pending):
+            try:
+                age = (utcnow() - datetime_from(pending.get('at'))).total_seconds()
+            except (TypeError, ValueError):
+                age = 999
+            if age < 1.0:
+                return None
+        context = _refresh(session, run, detail=True)
+        detail = context.summary(True).get('_detail')
+        signature = _live_signature(session, run.id)
+    if detail is not None:
+        # Publish only after the completion/checkpoint transaction commits.
+        _live_remember(run_id, signature, detail)
+    return context
+
+
+def _snapshot_pending_threshold(run):
+    execution = ((run.spec_json or {}).get('execution_policy') or {})
+    every = int(execution.get('snapshot_every_new_qualified') or 0)
+    # Snapshot checks must not miss an intermediate threshold (e.g. 2 then 4).
+    # With only an interval configured, the 1-second checkpoint age still
+    # bounds staleness; do not turn every completion into a checkpoint.
+    return every if every > 0 else 20
 
 
 def _complete(task, result, pages, error, elapsed, operation_id):
@@ -687,8 +492,12 @@ def _complete(task, result, pages, error, elapsed, operation_id):
             for key in ('candidate_ordinal', 'source_id', 'query_id'):
                 if key in task['input']:
                     result[key] = task['input'][key]
-            related = [row.id for row in session.scalars(select(Company).where(Company.run_id == run.id))
-                       if row.data_json.get('domain') and row.data_json.get('domain') == result.get('domain')]
+            domain = result.get('domain')
+            # Targeted JSONB predicate instead of materialising the whole run
+            # cohort in Python for every completion.
+            related = ([row for row in session.scalars(select(Company.id).where(
+                Company.run_id == run.id, Company.data_json['domain'].astext == domain))]
+                if domain else [])
             if related:
                 result['related_company_ids'] = related
                 result.setdefault('conflicts', []).append(dict(field='domain', values=[result.get('domain')],
@@ -719,10 +528,27 @@ def _complete(task, result, pages, error, elapsed, operation_id):
         progress = deepcopy(operation.result_json)
         progress['processed_jobs'] = progress.get('processed_jobs', 0) + 1
         operation.result_json = progress
+        batch = _batch_projection_enabled()
+        if batch:
+            pending = stats.get('projection_pending') or {}
+            stats['projection_pending'] = {
+                'at': pending.get('at') or _iso(now),
+                'count': int(pending.get('count') or 0) + 1,
+            }
         run.stats_json = stats
         run.version += 1
-        _refresh(session, run, now)
-        return True
+        detail, signature = None, None
+        if not batch:
+            # Rollback path: preserve the previous per-completion authoritative
+            # refresh and page cache publish timing.
+            context = _refresh(session, run, now, detail=True)
+            detail = context.summary(True).get('_detail')
+            signature = _live_signature(session, run.id)
+        committed = True
+    if committed and detail is not None:
+        # Publish only after the commit: the page must never show uncommitted rows.
+        _live_remember(task['run_id'], signature, detail)
+    return committed
 
 
 def process(run_id, max_jobs=20, max_seconds=60, resume=False, operation_key=None,
@@ -773,6 +599,8 @@ def process(run_id, max_jobs=20, max_seconds=60, resume=False, operation_key=Non
         run.process_until = now + timedelta(seconds=settings.lease_seconds)
     started = time.monotonic()
     deadline = started + max_seconds
+    with transaction() as session:
+        snapshot_pending = _snapshot_pending_threshold(_run(session, run_id))
     stop = threading.Event()
     signal = threading.Semaphore(0)
     state_lock = threading.Lock()
@@ -848,7 +676,14 @@ def process(run_id, max_jobs=20, max_seconds=60, resume=False, operation_key=Non
                 break
             progressed = signal.acquire(timeout=0.2)
             if admitted or progressed:
-                _maybe_snapshot(run_id)
+                # Batch completion events into one projection (<=1 s or one
+                # snapshot threshold). Only a real checkpoint publishes a page
+                # refresh; rebuilding a fresh selection just to poll the page
+                # would recreate the coordinator cost this change removes.
+                checkpoint = _checkpoint_projection(run_id, min_pending=snapshot_pending)
+                if checkpoint is not None:
+                    _maybe_snapshot(run_id)
+                    _live_refresh(run_id, minimum_interval=1.0)
     finally:
         for thread in threads:
             thread.join(timeout=settings.lease_seconds)
@@ -860,18 +695,38 @@ def process(run_id, max_jobs=20, max_seconds=60, resume=False, operation_key=Non
                 for job in session.scalars(select(Job).where(Job.run_id == run.id, Job.state == 'running')):
                     _reclaim_expired(session, run, job, utcnow())
                 run.process_token = run.process_until = None
-                _refresh(session, run)
+    # A threshold snapshot can be reached by the final completion after the
+    # loop has no worker left to signal. Check once before the authoritative
+    # final projection, never on every completion.
+    checkpoint_context = _checkpoint_projection(run_id, min_pending=1)
+    _maybe_snapshot(run_id)
     with transaction() as session:
         run = _run(session, run_id)
         operation = session.get(Operation, operation_id, with_for_update=True)
+        projection_meta = (run.stats_json or {}).get('projection') or {}
+        if checkpoint_context is not None and projection_meta.get('version') == run.version:
+            # Reuse the just-committed checkpoint instead of selecting again.
+            context = checkpoint_context
+            research = context.summary(True)
+        else:
+            context = _refresh(session, run, detail=True)
+            research = context.summary(True)
+        detail = research.get('_detail')
+        signature = _live_signature(session, run.id)
         if operation.result_json.get('_owner') != token:
-            return {**_view(session, run), 'interrupted': True, 'operation_key': key}
-        # A pause/cancel revokes the old token. Its result is still a valid,
-        # replayable interrupted operation; no stale company is committed.
-        result = {**_view(session, run), 'processed_jobs': operation.result_json.get('processed_jobs', 0),
-                  'workers': workers, 'operation_key': key}
-        operation.result_json, operation.state = result, 'completed'
-        return result
+            result = {**_view(session, run, context=context, research=research),
+                      'interrupted': True, 'operation_key': key}
+        else:
+            # A pause/cancel revokes the old token. Its result is still a valid,
+            # replayable interrupted operation; no stale company is committed.
+            result = {**_view(session, run, context=context, research=research),
+                      'processed_jobs': operation.result_json.get('processed_jobs', 0),
+                      'workers': workers, 'operation_key': key}
+            operation.result_json, operation.state = result, 'completed'
+    if detail is not None:
+        _live_remember(run_id, signature, detail)
+    _live_refresh(run_id)
+    return result
 
 
 def _snapshot_due(run_id):
@@ -905,13 +760,6 @@ def _snapshot_due(run_id):
                             'records': sorted(row.get('company_id') or '' for row in _rows(session, run))})
         return {'key': 'auto-snapshot:' + projection[:32], 'reason': 'new_qualified' if due_new else 'interval',
                 'qualified': qualified, 'at': _iso(now)}
-
-
-def datetime_from(value):
-    from datetime import datetime
-    text = str(value).replace('Z', '+00:00')
-    parsed = datetime.fromisoformat(text)
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=utcnow().tzinfo)
 
 
 def _maybe_snapshot(run_id):
@@ -977,13 +825,9 @@ def finish(run_id, checkpoint=None, external_tool_usage=None, max_jobs=20, max_s
             _refresh(session, run)
             operation.result_json = {'run_id': run_id, 'finalized': True}
             _audit(session, run.id, 'run.finish')
+    _live_refresh(run_id)
     return process(run_id, max_jobs=max_jobs, max_seconds=max_seconds, resume=resume,
                    operation_key=('finish:' + _hash(key)) if operation_key else None, workers=workers)
-
-
-def list_runs():
-    with transaction() as session:
-        return [_view(session, run) for run in session.scalars(select(Run).order_by(Run.created_at.desc()))]
 
 
 def reassess(run_id, company_ids, operation_key, expected_version=None):
@@ -1053,16 +897,19 @@ def reassess(run_id, company_ids, operation_key, expected_version=None):
                 result_hash=_hash(result), original_input_hash=_hash(job.input_json), snapshots=evidence)
             changed.append(transition)
         run.version += 1
-        _refresh(session, run, now)
-        result = {**_view(session, run), 'reassessed_companies': len(changed), 'transitions': changed,
-                  'operation_key': operation_key, 'network_requests': 0}
+        context = _refresh(session, run, now)
+        result = {**_view(session, run, context=context), 'reassessed_companies': len(changed),
+                  'transitions': changed, 'operation_key': operation_key, 'network_requests': 0}
         operation.result_json = result
         _audit(session, run.id, 'run.reassess', operation_key=operation_key, release=release, transitions=changed)
-        return result
+    _live_refresh(run_id)
+    return result
 
 
 SUPPLEMENT_IMMUTABLE = {'company_name', 'website_url', 'country_code', 'branch_id',
                         'headquarters_country', 'registered_country'}
+
+
 SUPPLEMENT_FACT_FIELDS = ('business_models', 'offering_products', 'offering_services',
                           'customer_industries', 'entity_relationship', 'operating_countries',
                           'company_type', 'industry_text', 'employee_count', 'revenue',
@@ -1194,8 +1041,9 @@ def supplement(run_id, company_id, payload, operation_key, expected_version=None
             origins['supplemented_evidence'] = origins.get('supplemented_evidence', 0) + 1
             run.stats_json = {**run.stats_json, 'qualified_by_origin': origins}
         run.version += 1
-        _refresh(session, run, now)
-        answer = {**_view(session, run), 'company_id': company_id, 'expected_revision': body.expected_revision,
+        context = _refresh(session, run, now)
+        answer = {**_view(session, run, context=context), 'company_id': company_id,
+                  'expected_revision': body.expected_revision,
                   'revision': result['revision'], 'decision': result['qualification']['decision'],
                   'status': result['status'], 'evidence_hash': evidence_hash,
                   'network_requests': 0, 'dns_requests': 0, 'dispatch_resumed': False,
@@ -1205,7 +1053,8 @@ def supplement(run_id, company_id, payload, operation_key, expected_version=None
                release=release_identity(), previous_revision=revision, revision=result['revision'],
                evidence_hash=evidence_hash, decision=result['qualification']['decision'],
                network_requests=0)
-        return answer
+    _live_refresh(run_id)
+    return answer
 
 
 def extend_research(run_id, hours, operation_key, expected_version=None):
@@ -1233,244 +1082,16 @@ def extend_research(run_id, hours, operation_key, expected_version=None):
         state['time_limit_seconds'] = new_limit
         run.plan_json = {**run.plan_json, 'research': state}
         run.version += 1
-        _refresh(session, run, now)
+        context = _refresh(session, run, now)
         change = dict(previous_limit_seconds=old_limit, time_limit_seconds=new_limit,
                       active_wall_seconds=round(_elapsed(run, now), 3))
-        result = {**_view(session, run), 'extension': change, 'operation_key': operation_key}
+        result = {**_view(session, run, context=context), 'extension': change,
+                  'operation_key': operation_key}
         operation.result_json = result
         _audit(session, run.id, 'run.extend_research', operation_key=operation_key,
                release=release_identity(), **change)
-        return result
-
-
-def _export_view(row, current_progress=None):
-    if row.revoked_at or not row.artifact_ref or row.expires_at <= utcnow():
-        raise AppError('EXPORT_REVOKED', '导出已撤销或过期，请使用新的 export-key 重新导出', 409)
-    path = artifact_path(row.artifact_ref)
-    if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != row.artifact_hash:
-        raise AppError('ARTIFACT_MISSING', '导出文件缺失或校验失败，请重新导出', 409)
-    if row.report_ref:
-        report_path = artifact_path(row.report_ref)
-        if not report_path.is_file():
-            raise AppError('ARTIFACT_MISSING', '导出报告缺失或校验失败，请重新导出', 409)
-        report_bytes = report_path.read_bytes()
-        try:
-            valid_report = json.loads(report_bytes) == row.manifest_json
-        except (ValueError, UnicodeError):
-            valid_report = False
-        if not valid_report or (row.report_hash and hashlib.sha256(report_bytes).hexdigest() != row.report_hash):
-            raise AppError('ARTIFACT_MISSING', '导出报告缺失或校验失败，请重新导出', 409)
-    research = row.manifest_json.get('research_summary', {})
-    counts = row.manifest_json.get('row_counts', {})
-    delivery = row.manifest_json.get('delivery', {})
-    exported = counts.get('companies', 0)
-    summary = {key: research.get(key) for key in ('discovered', 'matched', 'excluded', 'uncertain', 'missing')}
-    summary.update(contactable=exported, exported_count=exported,
-        target_quantity=research.get('target_quantity'),
-        target_shortfall=max(0, research.get('target_quantity', 0) - exported))
-    return dict(id=row.id, export_id=row.id, run_id=row.run_id, format=row.format, filename=row.filename,
-        file=str(path), path=str(path), report_file=str(artifact_path(row.report_ref)) if row.report_ref else None,
-        artifact_hash=row.artifact_hash, manifest=deepcopy(row.manifest_json),
-        summary=summary, snapshot_at=row.manifest_json.get('generated_at'),
-        delivery_policy=deepcopy(delivery), delivery_policy_version=delivery.get('policy_version'),
-        current_progress=current_progress,
-        external_tool_usage=deepcopy(research.get('external_tool_usage', {})),
-        quality_report=deepcopy(row.manifest_json.get('quality_report') or {
-            'metrics': row.manifest_json.get('metrics'), 'delivery': row.manifest_json.get('delivery')}))
-
-
-def _metrics_context(session, run, now):
-    rows = list(session.scalars(select(Observation).where(Observation.run_id == run.id, Observation.started_at <= now)))
-    http = [row for row in rows if row.kind == 'http']
-    unfinished = [row for row in http if row.state == 'started' or not row.finished_at or row.finished_at > now]
-    unfinished_ids = {row.id for row in unfinished}
-    settled = [row for row in http if row.id not in unfinished_ids]
-    denied = [row for row in settled if row.data_json.get('dispatched') is False]
-    # Settled observed-1 rows predate admission/dispatch separation and retain
-    # their original physical-attempt contract. Explicit new unknowns never do.
-    dispatched = [row for row in settled if row.data_json.get('dispatched') is True
-                  or ('dispatched' not in row.data_json
-                      and row.data_json.get('protocol_version') in {None, 'observed-1'})]
-    unknown = len(http) - len(denied) - len(dispatched)
-    pruned = run.stats_json.get('observation_pruned', False)
-    lookup_pruned = run.stats_json.get('lookup_observation_pruned', False)
-    summary = dict(enabled=True, protocol_version='observed-2',
-        actual_http_attempts=None if pruned or unknown else len(dispatched), recorded_attempts=len(http),
-        confirmed_http_attempts=None if pruned else len(dispatched),
-        dispatch_denied_attempts=None if pruned else len(denied),
-        dispatch_unknown_attempts=None if pruned else unknown,
-        by_purpose=dict(Counter(row.data_json.get('purpose', 'unknown') for row in dispatched)),
-        source_counts=dict(Counter(row.data_json.get('source_id', 'unknown') for row in dispatched)),
-        query_counts=dict(Counter(row.data_json.get('query_id', 'unknown') for row in dispatched)),
-        status_counts=dict(Counter(str(row.data_json.get('http_status') or row.data_json.get('error_code') or 'unknown') for row in dispatched)),
-        retry_attempts=sum(row.data_json.get('attempt', 1) > 1 for row in dispatched),
-        unfinished_attempts=len(unfinished), outcome_unknown=unknown,
-        completeness='historical_missing' if pruned else 'incomplete' if unknown else 'observed',
-        cache_hits=None, throttle_wait_seconds=sum(row.data_json.get('throttle_seconds', 0) for row in http),
-        response_bytes=sum(row.data_json.get('response_bytes') or 0 for row in dispatched) if not unknown and not pruned else None)
-    for kind in ('dns', 'mx'):
-        selected = [row for row in rows if row.kind == kind]
-        pending = sum(row.state == 'started' or not row.finished_at or row.finished_at > now for row in selected)
-        summary[kind + '_attempts'] = None if lookup_pruned or pending else len(selected)
-        summary[kind + '_recorded_attempts'] = len(selected)
-        summary[kind + '_unknown_count'] = pending
-    summary['dns_mx_completeness'] = 'historical_missing' if lookup_pruned else 'incomplete' if any(
-        summary[kind + '_unknown_count'] for kind in ('dns', 'mx')) else 'observed'
-    state = _summary(session, run, now)
-    return dict(as_of=now, started_at=run.created_at, finished_at=run.finished_at, batch_status=run.status,
-        paused_seconds=run.stats_json.get('paused_seconds', 0), paused_at=run.stats_json.get('paused_at'),
-        task_processing_seconds=run.stats_json.get('active_seconds', 0),
-        stage_processing_seconds=run.stats_json.get('stage_processing_seconds', {}),
-        raw_candidate_count=state['admitted_count'] + run.stats_json.get('duplicates', 0),
-        discovered=state['admitted_count'], failed=state['failed'], observation_summary=summary,
-        metrics_version=METRICS_VERSION, research=_research_metrics(session, run, state, summary))
-
-
-def _research_metrics(session, run, state, observation_summary):
-    """Versioned research metrics; unknown values stay null, never zero."""
-    stats = run.stats_json
-    rows = list(session.scalars(select(Company).where(Company.run_id == run.id)))
-    decisions = Counter((row.data_json.get('qualification') or {}).get('decision') for row in rows)
-    origins = deepcopy(stats.get('qualified_by_origin') or {})
-    return {
-        'metrics_version': METRICS_VERSION,
-        'spec_version': spec_version(run.spec_json),
-        'discovery_seen': stats.get('discovery_seen'),
-        'append_ready': stats.get('append_ready'),
-        'admitted': state['admitted_count'],
-        'qualified': decisions['qualified'],
-        'excluded': decisions['excluded'],
-        'needs_review': decisions['uncertain'],
-        'qualified_by_origin': origins or None,
-        'new_qualified': origins.get('live_research'),
-        'supplement_qualified': origins.get('supplemented_evidence'),
-        'offline_reassess_qualified': origins.get('saved_evidence_reassessed'),
-        'offline_evidence_qualified': origins.get('offline_evidence'),
-        'missing_items': state.get('missing_items') or None,
-        'failure_categories': stats.get('failure_categories') or None,
-        'tool_invocations': state.get('external_tool_usage') or None,
-        'physical_http_attempts': observation_summary.get('actual_http_attempts'),
-        'dns_attempts': observation_summary.get('dns_attempts'),
-        'mx_attempts': observation_summary.get('mx_attempts'),
-        'cache_hits': observation_summary.get('cache_hits'),
-        'throttle_wait_seconds': observation_summary.get('throttle_wait_seconds'),
-        'snapshots': deepcopy(stats.get('snapshots') or None),
-        'reserved_pages': stats.get('reserved_pages'),
-        'queue_wait_seconds': stats.get('queue_wait_seconds'),
-        'stage_processing_seconds': deepcopy(stats.get('stage_processing_seconds') or None),
-        'units': {'counts': 'enterprises', 'timing': 'seconds', 'requests': 'physical_attempts'},
-        'semantics': 'discovered=admitted_count unchanged; discovery_seen counts submitted candidates; '
-                     'tool_invocations are Agent-side calls and never substitute physical HTTP attempts',
-    }
-
-
-def export(run_id, format='xlsx', export_key=None):
-    from app.delivery.exporting import build_export
-    if format not in {'xlsx', 'csv'}:
-        raise AppError('VALIDATION_ERROR', '导出格式仅支持 xlsx 或 csv')
-    with transaction() as session:
-        _delivery_lock(session)
-        run = _run(session, run_id)
-        now = utcnow()
-        records = _rows(session, run)
-        suppressed = _suppressions(session, run.spec_json)
-        version = spec_version(run.spec_json)
-        policy = ((run.spec_json.get('qualification_policy') or {}).get('contact_policy')
-                  if version == 2 else None)
-        identity = 'v2' if version == 2 else 'legacy'
-        from app.delivery.selection import select_export_companies
-        projection, _ = select_export_companies(records, mode='balanced', suppressions=suppressed,
-            freshness_days=run.spec_json.get('freshness_days', 180), now=now,
-            delivery_only=True, delivery_limit=run.spec_json['quantity'], policy=policy,
-            identity_version=identity)
-        key = export_key or 'auto:' + _hash({'projection': projection, 'version': run.version, 'format': format,
-            'suppressions': suppressed})
-        operation, replay = _operation(session, run, 'export', key, {'format': format})
-        if replay:
-            row = session.get(Export, operation.result_json['export_id'])
-            if row and not row.revoked_at and row.artifact_ref and row.expires_at > now:
-                return _export_view(row, _summary(session, run, now))
-            if export_key:
-                raise AppError('EXPORT_REVOKED', '导出已撤销或过期，请使用新的 export-key', 409)
-        if run.demo_only:
-            raise AppError('DEMO_EXPORT_BLOCKED', '演示数据不能正式导出', 409)
-        if not records:
-            raise AppError('EXPORT_EMPTY', '批次暂无可导出企业', 409)
-        manifest = dict(batch_id=run.id, run_id=run.id, segment_hash=run.spec_hash,
-            source_strategy=run.plan_json, generated_at=_iso(now), tool_version='skill-v2.1.0',
-            runtime_release=release_identity(), research_release=run.plan_json.get('release'),
-            freshness_days=run.spec_json.get('freshness_days', 180), budget=0, cost=0,
-            spec_version=version, metrics_version=METRICS_VERSION,
-            research_summary=_summary(session, run, now))
-        if version == 2:
-            from app.rules.policy import policy_summary
-            manifest['policy'] = policy_summary(run.spec_json)
-            manifest['evidence_policy'] = deepcopy(run.spec_json.get('evidence_policy'))
-        data, filename, media_type, manifest = build_export(records, manifest, format=format,
-            mode='balanced', language='zh', suppressions=suppressed,
-            now=now, delivery_only=True, delivery_limit=run.spec_json['quantity'],
-            metrics_context=_metrics_context(session, run, now), policy=policy,
-            identity_version=identity)
-        if len(data) > 100 * 1024 ** 2:
-            raise AppError('EXPORT_TOO_LARGE', '导出超过 100 MiB，请缩小批次')
-        ref, digest = put(data, 'xlsx' if format == 'xlsx' else 'zip')
-        report_ref, report_hash = put(json.dumps(manifest, ensure_ascii=False, default=str, indent=2).encode(), 'json')
-        row = Export(id=uid('export'), run_id=run.id, format=format, filename=filename,
-            artifact_ref=ref, artifact_hash=digest, report_ref=report_ref,
-            report_hash=report_hash, manifest_json=manifest,
-            expires_at=now + timedelta(days=int(os.getenv('B2B_EXPORT_RETENTION_DAYS', '30'))))
-        session.add(row)
-        session.flush()
-        result = _export_view(row, _summary(session, run, now))
-        operation.result_json = {'export_id': row.id}
-        _audit(session, run.id, 'export.created', export_id=row.id)
-        return result
-
-
-def suppression_list():
-    with transaction() as session:
-        return _suppressions(session)
-
-
-def _revoke_exports(session, run_id=None):
-    query = select(Export).where(Export.revoked_at.is_(None))
-    if run_id:
-        query = query.where(Export.run_id == run_id)
-    count = 0
-    for row in session.scalars(query.with_for_update()):
-        queue_artifact_delete(session, row.artifact_ref)
-        queue_artifact_delete(session, row.report_ref)
-        row.artifact_ref = row.report_ref = None
-        row.revoked_at = utcnow()
-        count += 1
-    return count
-
-
-def suppression_add(type, value, reason='用户排除'):
-    from app.schemas import SuppressionInput, domain
-    body = SuppressionInput(type=type, value=value, reason=reason)
-    value = domain(body.value) if type == 'domain' else body.value.casefold() if type == 'email' else body.value
-    with transaction() as session:
-        _delivery_lock(session)
-        old = session.scalar(select(Suppression).where(Suppression.type == type, Suppression.value == value))
-        if old:
-            return _suppression_view(old)
-        row = Suppression(id=uid('suppression'), type=type, value=value, reason=body.reason)
-        session.add(row)
-        _revoke_exports(session)
-        session.flush()
-        return _suppression_view(row)
-
-
-def suppression_remove(id):
-    with transaction() as session:
-        _delivery_lock(session)
-        row = session.get(Suppression, id, with_for_update=True)
-        if not row:
-            raise AppError('NOT_FOUND', '抑制记录不存在', 404)
-        session.delete(row)
-        _revoke_exports(session)
-        return {'deleted': id}
+    _live_refresh(run_id)
+    return result
 
 
 def _delete_company(session, row):
@@ -1494,10 +1115,47 @@ def delete_company(id):
         if not row:
             raise AppError('NOT_FOUND', '企业不存在', 404)
         run = _run(session, row.run_id)
+        run_id = run.id
         _delete_company(session, row)
         run.version += 1
         _audit(session, run.id, 'company.deleted', company_id=id)
-        return {'deleted': id, 'exports_revoked': True}
+        answer = {'deleted': id, 'exports_revoked': True}
+    _live_refresh(run_id)
+    return answer
+
+
+def suppression_add(type, value, reason='用户排除'):
+    from app.schemas import SuppressionInput, domain
+    body = SuppressionInput(type=type, value=value, reason=reason)
+    value = domain(body.value) if type == 'domain' else body.value.casefold() if type == 'email' else body.value
+    with transaction() as session:
+        _delivery_lock(session)
+        old = session.scalar(select(Suppression).where(Suppression.type == type, Suppression.value == value))
+        if old:
+            return _suppression_view(old)
+        row = Suppression(id=uid('suppression'), type=type, value=value, reason=body.reason)
+        session.add(row)
+        _revoke_exports(session)
+        session.flush()
+        view = _suppression_view(row)
+    # The global list changed: every saved page must drop the excluded rows.
+    _live_forget()
+    _live_refresh_existing()
+    return view
+
+
+def suppression_remove(id):
+    with transaction() as session:
+        _delivery_lock(session)
+        row = session.get(Suppression, id, with_for_update=True)
+        if not row:
+            raise AppError('NOT_FOUND', '抑制记录不存在', 404)
+        session.delete(row)
+        _revoke_exports(session)
+        answer = {'deleted': id}
+    _live_forget()
+    _live_refresh_existing()
+    return answer
 
 
 def maintenance(apply=False, periodic=False):
@@ -1521,6 +1179,7 @@ def maintenance(apply=False, periodic=False):
         exports = list(session.scalars(select(Export).where(Export.expires_at <= now, Export.artifact_ref.is_not(None))))
         companies = list(session.scalars(select(Company).where(Company.expires_at <= now)))
         result = dict(dry_run=not apply, expired_snapshots=len(snapshots), expired_exports=len(exports), expired_companies=len(companies))
+        affected = set()
         if apply:
             for row in snapshots:
                 queue_artifact_delete(session, row.artifact_ref)
@@ -1533,6 +1192,7 @@ def maintenance(apply=False, periodic=False):
             for row in companies:
                 _run(session, row.run_id)
                 _delete_company(session, row)
+                affected.add(row.run_id)
             expired_observations = list(session.scalars(select(Observation).where(Observation.created_at < cutoff)))
             for observation in expired_observations:
                 if observation.run_id:
@@ -1555,4 +1215,14 @@ def maintenance(apply=False, periodic=False):
                 for path in root.glob('object_*'):
                     if path.is_file() and path.name not in refs and path.stat().st_mtime < time.time() - 3600:
                         queue_artifact_delete(session, path.name)
+    if apply:
+        # Expired enterprises must disappear from any saved page immediately.
+        for run_id in sorted(affected):
+            _live_refresh(run_id)
+        if not periodic:
+            try:
+                from app.live.projection import cleanup
+                cleanup()
+            except Exception:
+                pass
     return result

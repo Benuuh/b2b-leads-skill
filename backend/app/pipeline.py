@@ -10,6 +10,7 @@ fetched afterwards.
 """
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import pycountry
 import re
 import time
@@ -171,9 +172,9 @@ def precheck_candidate(value, spec, *, fixture=False, index=None):
     return candidate
 
 
-def qualify(record, candidate, pages, spec):
+def qualify(record, candidate, pages, spec, assessment=None):
     from app.rules.qualification import assess_candidate
-    assessment = assess_candidate(candidate, pages, spec, observed=record)
+    assessment = assessment or assess_candidate(candidate, pages, spec, observed=record)
     record['website_binding_status'] = assessment['website_identity']['status']
     record['website_binding_evidence'] = deepcopy(assessment['website_identity']['evidence'])
     if assessment['website_identity']['status'] == 'conflicting':
@@ -274,7 +275,9 @@ def reassess_company(task, pages, previous):
         from app.delivery.selection import channel_status
         policy = (spec.get('qualification_policy') or {}).get('contact_policy')
         freshness = int((spec.get('evidence_policy') or {}).get('freshness_days', spec.get('freshness_days', 180)))
-        if assess_policy(candidate, pages, spec)['decision'] == 'qualified' and not suppressed:
+        # Reuse this single assessment for both the branch and qualify_v2.
+        assessment = assess_policy(candidate, pages, spec)
+        if assessment['decision'] == 'qualified' and not suppressed:
             mx = {}
             for contact in previous.get('contacts') or []:
                 if contact.get('email') and contact.get('mx_status') in {'valid', 'invalid'}:
@@ -285,9 +288,9 @@ def reassess_company(task, pages, previous):
                                      mx_lookup=lambda host: mx.get(host.casefold(), 'unknown'))
             _preserve_contact_times(record, previous, candidate, pages)
             channel = channel_status(record, policy, freshness_days=freshness)
-            result = qualify_v2(record, candidate, pages, spec, channel=channel)
+            result = qualify_v2(record, candidate, pages, spec, assessment=assessment, channel=channel)
         else:
-            result = qualify_v2(seed_record, candidate, pages, spec,
+            result = qualify_v2(seed_record, candidate, pages, spec, assessment=assessment,
                                 channel=channel_status(seed_record, policy, freshness_days=freshness))
         if suppressed:
             result['qualification'].update(decision='excluded', confidence=0, reasons=['命中抑制名单'])
@@ -556,14 +559,24 @@ def _process_company_v2(task, pages):
 
     assessment = assess_policy_cached(candidate, [], spec)
     extracted = {}
+    page_digests = {}
     extraction_count = 0
+
+    def page_digest(page):
+        # Pages are immutable once appended by the crawler. Hash each page once
+        # instead of re-serializing every earlier page on every callback: the
+        # extraction key becomes O(total page bytes), not O(pages x bytes).
+        marker = id(page)
+        if marker not in page_digests:
+            page_digests[marker] = hashlib.sha256(
+                json.dumps(page, sort_keys=True, default=str).encode()).hexdigest()
+        return page_digests[marker]
 
     def enriched(current, *, offline=False):
         nonlocal extraction_count
-        # One company's retained pages are immutable after arrival. Include all
-        # page fields so text-only changes and lineage cannot reuse an old result.
-        key = (offline, tuple(json.dumps(page, sort_keys=True, default=str)
-                              for page in current))
+        # Include every page's content digest so text-only changes, page order
+        # and offline/online isolation still cannot reuse an old extraction.
+        key = (offline, tuple(page_digest(page) for page in current))
         if key not in extracted:
             extracted.clear()  # Only the latest page set is needed by the callback/final save.
             extracted[key] = extract_company(candidate, current, spec,

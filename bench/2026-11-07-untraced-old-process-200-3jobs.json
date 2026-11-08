@@ -1,0 +1,74 @@
+{
+ "app_root": "<repo>/.tmp/baseline-2.6.0/backend",
+ "scenario": "process",
+ "repeats": 1,
+ "cohorts": [
+  {
+   "scenario": "process",
+   "cohort": 200,
+   "repeats": 1,
+   "p50_seconds": 7.341141,
+   "p95_seconds": 7.341141,
+   "mean_seconds": 7.341141,
+   "stdev_seconds": 0.0,
+   "peak_rss": null,
+   "tracemalloc_peak": null,
+   "sql_calls_p50": 34,
+   "selection_calls_last": {
+    "filter_companies": 2408,
+    "coalesce_companies": 2412,
+    "delivery_companies": 4,
+    "channel_status": 1600
+   },
+   "rounds": [
+    {
+     "repeat": 1,
+     "seconds": 7.341141,
+     "sql_calls": 34,
+     "selection_calls": {
+      "filter_companies": 2408,
+      "coalesce_companies": 2412,
+      "delivery_companies": 4,
+      "channel_status": 1600
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "batch_id",
+      "checkpoint",
+      "created_at",
+      "demo_only",
+      "errors",
+      "evidence_policy",
+      "execution_policy",
+      "external_tool_usage",
+      "finished_at",
+      "id",
+      "input_closed",
+      "name",
+      "operation_key",
+      "plan",
+      "policy",
+      "processed_jobs",
+      "requires_more_processing",
+      "research",
+      "run_id",
+      "segment",
+      "spec",
+      "spec_version",
+      "stats",
+      "status",
+      "summary",
+      "updated_at",
+      "version",
+      "workers"
+     ]
+    }
+   ]
+  }
+ ],
+ "generated_at": "2026-11-07T02:54:28.986706+00:00",
+ "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+ "note": "isolated sca_bench database; fixed deterministic cohort",
+ "app_file": "<repo>/backend/app/__init__.py"
+}

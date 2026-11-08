@@ -115,6 +115,20 @@ def suppression_sets(suppressions):
     return result
 
 
+def normalize_channels(values):
+    """Canonical delivery channels accepted by the page and the core export."""
+    if values is None or values == [] or values == "":
+        return None
+    aliases = {"email": "email", "business_email": "email", "email_channel": "email",
+               "phone": "phone", "business_phone": "phone", "telephone": "phone",
+               "form": "contact_form", "contact_form": "contact_form",
+               "contact_form_url": "contact_form"}
+    supplied = [values] if isinstance(values, str) else list(values)
+    chosen = sorted({aliases[key] for key in (aliases.get(str(value).strip().casefold())
+                                               for value in supplied) if key})
+    return chosen or None
+
+
 def matches(value, allowed, *, substring=False):
     if allowed is None or allowed == [] or allowed == "":
         return True
@@ -206,6 +220,10 @@ def redact_qualification(company, original, permitted_emails, permitted_phones, 
     forbidden_phones = (prior_phones - {normalize_phone(phone) for phone in permitted_phones}) | suppressed["phone"]
     forbidden_emails.discard("")
     forbidden_phones.discard("")
+    if not forbidden_emails and not forbidden_phones:
+        # Nothing was removed or suppressed; ordinary rows skip the recursive
+        # qualification/source rewrite entirely.
+        return
     removed = object()
 
     def clean(value):
@@ -240,22 +258,18 @@ def redact_qualification(company, original, permitted_emails, permitted_phones, 
             company[field] = ({} if field == 'qualification' else []) if cleaned is removed else cleaned
 
 
-def filter_companies(companies, *, mode="balanced", filters=None, suppressions=None, freshness_days=180,
-                     now=None, identity_version="legacy"):
-    """Return a detached, deduplicated export view, including only permitted facts.
+def _prepare_cohort(companies, *, mode="balanced", filters=None, suppressions=None, freshness_days=180,
+                    now=None, identity_version="legacy"):
+    """One coalesce, property/suppression pass and one global ownership freeze.
 
-    Domain/company suppressions remove a whole company; email/phone suppressions
-    remove matching contact records. Main channels and source rows are rebuilt
-    afterwards, so removed data cannot escape through the Companies/Sources sheet.
+    ``filter_companies`` and ``delivery_companies`` both consume this prepared
+    view. It is per call, not a cross-command cache: callers pass the same
+    frozen input when they need the same revision.
     """
-    if mode not in {"verified_only", "balanced", "max_coverage"}:
-        raise ValueError("Unknown export mode")
     filters = normalize_filters(filters)
     current = now if isinstance(now, datetime) else datetime.fromisoformat(str(now).replace("Z", "+00:00")) if now else datetime.now(timezone.utc)
     current = current.replace(tzinfo=current.tzinfo or timezone.utc)
     suppressed = suppression_sets(suppressions)
-    seen_companies, seen_emails, seen_phones = set(), set(), set()
-    result = []
     coalesced = coalesce_companies(companies, identity_version=identity_version)
     # Freeze channel ownership before quality, contact, score and presence
     # filters. An output predicate must never transfer a channel to a different
@@ -297,6 +311,144 @@ def filter_companies(companies, *, mode="balanced", filters=None, suppressions=N
                 owners["email"].setdefault(email, marker)
             if phone:
                 owners["phone"].setdefault(phone, marker)
+    return {'filters': filters, 'current': current, 'suppressed': suppressed,
+            'coalesced': coalesced, 'eligible': eligible, 'owners': owners,
+            'identity_version': identity_version, 'freshness_days': freshness_days,
+            'suppressions': suppressions, 'mode': mode}
+
+
+def _prepared_rows(prepared, mode='balanced'):
+    """Project a prepared cohort through the common filter (no re-coalesce)."""
+    return filter_companies(prepared['coalesced'], mode=mode, filters=prepared['filters'],
+        suppressions=prepared['suppressions'], freshness_days=prepared['freshness_days'],
+        now=prepared['current'], identity_version=prepared['identity_version'],
+        _prepared=prepared)
+
+
+def _finalize_company(company, original, *, filters, suppressed, mode):
+    """Filter one company's already-selected contacts and rebuild provenance.
+
+    This is the tail of ``filter_companies``. Delivery reuses it for a row that
+    already passed the cohort ownership/filter pass, avoiding a second
+    single-company coalesce/deepcopy for every enterprise in an export.
+    """
+    contacts = company["contacts"]
+    permitted_emails = {c["email"] for c in contacts if c.get("email")}
+    permitted_phones = {c["phone"] for c in contacts if c.get("phone")}
+    # Conflict annotations are data too: redact contact values removed by a
+    # suppression or verification filter instead of leaving a side channel.
+    clean_conflicts = []
+    for conflict in company.get("conflicts", []):
+        if not isinstance(conflict, dict):
+            conflict = {"field": "identity", "reason": str(conflict)}
+        field = str(conflict.get("field") or "")
+        if "email" in field or "phone" in field:
+            permitted = permitted_emails if "email" in field else permitted_phones
+            conflict["values"] = [value for value in conflict.get("values", []) if value in permitted]
+            if len(conflict["values"]) < 2:
+                continue
+        clean_conflicts.append(conflict)
+    company["conflicts"] = clean_conflicts
+    redact_qualification(company, original, permitted_emails, permitted_phones, suppressed)
+    # Contacts were ranked by the cohort pass. The final score below recomputes
+    # primary channels after provenance is rebuilt, so a second full score here
+    # would only duplicate deep copies and source scanning.
+    contacts = company.get("contacts") or []
+    company["email_count"] = sum(bool(c.get("email")) for c in contacts)
+    company["phone_count"] = sum(bool(c.get("phone")) for c in contacts)
+    company["named_contact_count"] = sum(bool(c.get("contact_name")) for c in contacts)
+    company["contactable"] = bool(company["email_count"] or company["phone_count"])
+    company["missing"] = [tag for tag in company.get("missing", []) if tag not in {"no_email", "no_phone", "no_named_contact"}]
+    for key, count in (("no_email", company["email_count"]), ("no_phone", company["phone_count"]), ("no_named_contact", company["named_contact_count"])):
+        if not count:
+            company["missing"].append(key)
+    if filters.get("has_email") is not None and bool(company["email_count"]) != bool(filters["has_email"]):
+        return None
+    if filters.get("has_phone") is not None and bool(company["phone_count"]) != bool(filters["has_phone"]):
+        return None
+    if filters.get("has_named_contact") is not None and any(c.get("contact_name") for c in contacts) != bool(filters["has_named_contact"]):
+        return None
+    if mode == "verified_only" and not contacts:
+        return None
+    entity_fields = {c["contact_id"]: c for c in contacts}
+    entity_fields[company["company_id"]] = company
+    source_rows, seen_sources = [], set()
+    for source in company.get("sources", []):
+        entity = entity_fields.get(source.get("entity_id"))
+        if entity is None:
+            continue
+        field, value = source.get("field"), source.get("value")
+        subset_evidence = field in {"social_urls", "source_urls"} and isinstance(value, list) and all(item in entity.get(field, []) for item in value)
+        conflicting_evidence = field not in set(EMAIL_CHANNEL_FIELDS) | {"main_email", "main_phone", "phone", "phone_raw", "phone_extension", "phone_status", "phone_type", "line_type", "status"} and any(
+            isinstance(conflict, dict) and conflict.get("field") == field and value in conflict.get("values", []) for conflict in company.get("conflicts", []))
+        equivalent_name = field == "company_name" and normalize_name(entity.get(field)) == normalize_name(value)
+        if field not in entity or (entity.get(field) != value and not subset_evidence and not conflicting_evidence and not equivalent_name):
+            continue
+        if field in {"contacts", "sources", "associated_people", "conflicts"}:
+            continue
+        if field in {"main_email", "email"} and (not entity.get(field) or str(value).lower() in suppressed["email"]):
+            continue
+        if field in {"main_phone", "phone", "phone_raw"} and (not entity.get(field) or normalize_phone(value) in suppressed["phone"]):
+            continue
+        if mode == "verified_only" and (("email" in str(field) or field in {"syntax_status", "mx_status"}) and not entity.get("email", entity.get("main_email"))):
+            continue
+        if mode == "verified_only" and (("phone" in str(field) or field == "line_type") and not entity.get("phone", entity.get("main_phone"))):
+            continue
+        marker = json.dumps(source, sort_keys=True, ensure_ascii=False, default=str)
+        if marker not in seen_sources:
+            seen_sources.add(marker)
+            source_rows.append(source)
+    company["sources"] = source_rows
+    company["source_count"] = len({s.get("source_url") for s in source_rows if s.get("source_url")})
+    company = score_company(company, copy=False)
+    contacts = company["contacts"]
+    source_rows = company["sources"]
+    if company["confidence"] < _safe_number(filters.get("min_confidence", filters.get("confidence", 0))):
+        return None
+    if company["lead_score"] < _safe_number(filters.get("min_lead_score", 0)):
+        return None
+    for contact in contacts:
+        evidence = next((source for source in source_rows if source.get("entity_id") == contact["contact_id"]), None)
+        if evidence:
+            for field in ("tags", "confidence", "confidence_components", "contact_priority", "priority_score"):
+                if field in contact and not any(source.get("entity_id") == contact["contact_id"] and source.get("field") == field and source.get("value") == contact[field] for source in source_rows):
+                    source_rows.append({**evidence, "field": field, "value": contact[field], "method": "derived_export_freshness"})
+    context = next((source for source in source_rows if source.get("source_url")), None)
+    for field in ("main_email", "main_phone", "source_count", "email_count", "phone_count", "named_contact_count", "contactable", "qualification_score", "confidence", "lead_score", "score_breakdown", "missing", "conflicts"):
+        value = company.get(field)
+        if value is None or value == [] or not context:
+            continue
+        evidence = context
+        if field in {"main_email", "main_phone"}:
+            contact_field = "email" if field == "main_email" else "phone"
+            evidence = next((source for source in source_rows if source.get("field") == contact_field and source.get("value") == value), context)
+        if not any(source.get("entity_id") == company["company_id"] and source.get("field") == field and source.get("value") == value for source in source_rows):
+            source_rows.append({**evidence, "entity_id": company["company_id"], "field": field, "value": value,
+                                "method": "derived_export_selection"})
+    return company
+
+
+def filter_companies(companies, *, mode="balanced", filters=None, suppressions=None, freshness_days=180,
+                     now=None, identity_version="legacy", _prepared=None):
+    """Return a detached, deduplicated export view, including only permitted facts.
+
+    Domain/company suppressions remove a whole company; email/phone suppressions
+    remove matching contact records. Main channels and source rows are rebuilt
+    afterwards, so removed data cannot escape through the Companies/Sources sheet.
+    """
+    if mode not in {"verified_only", "balanced", "max_coverage"}:
+        raise ValueError("Unknown export mode")
+    prepared = _prepared or _prepare_cohort(companies, mode=mode, filters=filters,
+        suppressions=suppressions, freshness_days=freshness_days, now=now,
+        identity_version=identity_version)
+    filters = prepared['filters']
+    current = prepared['current']
+    suppressed = prepared['suppressed']
+    identity_version = prepared['identity_version']
+    eligible = prepared['eligible']
+    owners = prepared['owners']
+    seen_companies, seen_emails, seen_phones = set(), set(), set()
+    result = []
     for original in eligible:
         company = deepcopy(original)
         domain = normalize_domain(company.get("domain") or company.get("website_url") or "")
@@ -385,102 +537,10 @@ def filter_companies(companies, *, mode="balanced", filters=None, suppressions=N
         if contact_filter and not contacts:
             continue
         company["contacts"] = contacts
-        # Conflict annotations are data too: redact contact values removed by a
-        # suppression or verification filter instead of leaving a side channel.
-        permitted_emails = {c["email"] for c in contacts if c.get("email")}
-        permitted_phones = {c["phone"] for c in contacts if c.get("phone")}
-        clean_conflicts = []
-        for conflict in company.get("conflicts", []):
-            if not isinstance(conflict, dict):
-                conflict = {"field": "identity", "reason": str(conflict)}
-            field = str(conflict.get("field") or "")
-            if "email" in field or "phone" in field:
-                permitted = permitted_emails if "email" in field else permitted_phones
-                conflict["values"] = [value for value in conflict.get("values", []) if value in permitted]
-                if len(conflict["values"]) < 2:
-                    continue
-            clean_conflicts.append(conflict)
-        company["conflicts"] = clean_conflicts
-        redact_qualification(company, original, permitted_emails, permitted_phones, suppressed)
-        # Select primary channels from the retained contacts by business
-        # priority, before rebuilding their field-level provenance.
-        company = score_company(company)
-        contacts = company["contacts"]
-        company["email_count"] = sum(bool(c.get("email")) for c in contacts)
-        company["phone_count"] = sum(bool(c.get("phone")) for c in contacts)
-        company["named_contact_count"] = sum(bool(c.get("contact_name")) for c in contacts)
-        company["contactable"] = bool(company["email_count"] or company["phone_count"])
-        company["missing"] = [tag for tag in company.get("missing", []) if tag not in {"no_email", "no_phone", "no_named_contact"}]
-        for key, count in (("no_email", company["email_count"]), ("no_phone", company["phone_count"]), ("no_named_contact", company["named_contact_count"])):
-            if not count:
-                company["missing"].append(key)
-        if filters.get("has_email") is not None and bool(company["email_count"]) != bool(filters["has_email"]):
+        company = _finalize_company(company, original, filters=filters,
+            suppressed=suppressed, mode=mode)
+        if company is None:
             continue
-        if filters.get("has_phone") is not None and bool(company["phone_count"]) != bool(filters["has_phone"]):
-            continue
-        if filters.get("has_named_contact") is not None and any(c.get("contact_name") for c in contacts) != bool(filters["has_named_contact"]):
-            continue
-        if mode == "verified_only" and not contacts:
-            continue
-        entity_fields = {c["contact_id"]: c for c in contacts}
-        entity_fields[company["company_id"]] = company
-        source_rows, seen_sources = [], set()
-        for source in company.get("sources", []):
-            entity = entity_fields.get(source.get("entity_id"))
-            if entity is None:
-                continue
-            field, value = source.get("field"), source.get("value")
-            # Drop provenance for a removed or replaced contact field, including
-            # pre-filter company aggregates which may contain a suppressed value.
-            subset_evidence = field in {"social_urls", "source_urls"} and isinstance(value, list) and all(item in entity.get(field, []) for item in value)
-            conflicting_evidence = field not in set(EMAIL_CHANNEL_FIELDS) | {"main_email", "main_phone", "phone", "phone_raw", "phone_extension", "phone_status", "phone_type", "line_type", "status"} and any(
-                isinstance(conflict, dict) and conflict.get("field") == field and value in conflict.get("values", []) for conflict in company.get("conflicts", []))
-            equivalent_name = field == "company_name" and normalize_name(entity.get(field)) == normalize_name(value)
-            if field not in entity or (entity.get(field) != value and not subset_evidence and not conflicting_evidence and not equivalent_name):
-                continue
-            if field in {"contacts", "sources", "associated_people", "conflicts"}:
-                continue
-            if field in {"main_email", "email"} and (not entity.get(field) or str(value).lower() in suppressed["email"]):
-                continue
-            if field in {"main_phone", "phone", "phone_raw"} and (not entity.get(field) or normalize_phone(value) in suppressed["phone"]):
-                continue
-            if mode == "verified_only" and (("email" in str(field) or field in {"syntax_status", "mx_status"}) and not entity.get("email", entity.get("main_email"))):
-                continue
-            if mode == "verified_only" and (("phone" in str(field) or field == "line_type") and not entity.get("phone", entity.get("main_phone"))):
-                continue
-            marker = json.dumps(source, sort_keys=True, ensure_ascii=False, default=str)
-            if marker not in seen_sources:
-                seen_sources.add(marker)
-                source_rows.append(source)
-        company["sources"] = source_rows
-        company["source_count"] = len({s.get("source_url") for s in source_rows if s.get("source_url")})
-        company = score_company(company)
-        contacts = company["contacts"]
-        source_rows = company["sources"]
-        if company["confidence"] < _safe_number(filters.get("min_confidence", filters.get("confidence", 0))):
-            continue
-        if company["lead_score"] < _safe_number(filters.get("min_lead_score", 0)):
-            continue
-        for contact in contacts:
-            evidence = next((source for source in source_rows if source.get("entity_id") == contact["contact_id"]), None)
-            if evidence:
-                for field in ("tags", "confidence", "confidence_components", "contact_priority", "priority_score"):
-                    if field in contact and not any(source.get("entity_id") == contact["contact_id"] and source.get("field") == field and source.get("value") == contact[field] for source in source_rows):
-                        source_rows.append({**evidence, "field": field, "value": contact[field], "method": "derived_export_freshness"})
-        # Aggregates are rebuilt after filtering. Preserve their traceability to
-        # the retained facts, rather than reusing pre-filter aggregate evidence.
-        context = next((source for source in source_rows if source.get("source_url")), None)
-        for field in ("main_email", "main_phone", "source_count", "email_count", "phone_count", "named_contact_count", "contactable", "qualification_score", "confidence", "lead_score", "score_breakdown", "missing", "conflicts"):
-            value = company.get(field)
-            if value is None or value == [] or not context:
-                continue
-            evidence = context
-            if field in {"main_email", "main_phone"}:
-                contact_field = "email" if field == "main_email" else "phone"
-                evidence = next((source for source in source_rows if source.get("field") == contact_field and source.get("value") == value), context)
-            if not any(source.get("entity_id") == company["company_id"] and source.get("field") == field and source.get("value") == value for source in source_rows):
-                source_rows.append({**evidence, "entity_id": company["company_id"], "field": field, "value": value,
-                                    "method": "derived_export_selection"})
         seen_companies.add(identity)
         seen_emails.update(pending_emails)
         seen_phones.update(pending_phones)
@@ -517,8 +577,24 @@ def _observed(source):
         marker in method for marker in INFERRED_METHODS)
 
 
-def _website_ambiguous(company):
-    if company.get('website_binding_status') == 'conflicting' or website_identity(company)['status'] == 'conflicting':
+def _binding(company):
+    """Use the stored binding verdict when present; recompute only as fallback.
+
+    Pipeline qualification persists ``website_binding_status`` from the same
+    deterministic ``website_identity`` call. Recomputing it for every delivery
+    row repeats source parsing for no new information.
+    """
+    status = company.get('website_binding_status')
+    # A bare declared status is not evidence. Pipeline qualification stores the
+    # matching evidence rows; only that pair may skip the recomputation.
+    if status == 'confirmed' and company.get('website_binding_evidence'):
+        return {'status': 'confirmed', 'evidence': company.get('website_binding_evidence')}
+    return website_identity(company)
+
+
+def _website_ambiguous(company, binding=None):
+    binding = binding or _binding(company)
+    if company.get('website_binding_status') == 'conflicting' or binding['status'] == 'conflicting':
         return True
     domains = {normalize_domain(company.get("domain") or company.get("website_url") or "")}
     for conflict in company.get("conflicts") or []:
@@ -527,7 +603,7 @@ def _website_ambiguous(company):
     return len(domains - {""}) > 1
 
 
-def _bound_source(company, url, source=None):
+def _bound_source(company, url, source=None, binding=None):
     """An official-site claim cannot bind a different site's subject.
 
     A directory can supply a public company channel when the same page also
@@ -540,10 +616,11 @@ def _bound_source(company, url, source=None):
     source_domain = normalize_domain(url)
     same_site = bool(own_domain and (source_domain == own_domain or source_domain.endswith("." + own_domain)))
     kind = (source or {}).get("source_type")
+    binding = binding or _binding(company)
     if kind in {"official_site", "company_website"}:
-        return same_site and website_identity(company)['status'] == 'confirmed'
+        return same_site and binding['status'] == 'confirmed'
     if same_site:
-        return website_identity(company)['status'] == 'confirmed'
+        return binding['status'] == 'confirmed'
     return any(row.get("entity_id") == company.get("company_id")
         and row.get("field") == "company_name" and normalize_name(row.get("value")) == normalize_name(company.get("company_name"))
         and subject_excerpt(company.get('company_name'), row.get('source_excerpt'))
@@ -551,7 +628,7 @@ def _bound_source(company, url, source=None):
         for row in company.get("sources") or [])
 
 
-def _channel_evidence(company, contact, field, value, current, days):
+def _channel_evidence(company, contact, field, value, current, days, binding=None):
     if contact.get("company_id") not in {None, company.get("company_id")}:
         return False
     if contact.get("binding_status") not in {"company", "explicit"}:
@@ -565,11 +642,11 @@ def _channel_evidence(company, contact, field, value, current, days):
     if matching:
         return any(_observed(row) and _fresh(row.get("retrieved_at"), current, days)
             and literal_value(field, value, row.get('source_excerpt'), company.get('country_code'))
-            and _bound_source(company, row.get("source_url"), row) for row in matching)
+            and _bound_source(company, row.get("source_url"), row, binding) for row in matching)
     return False
 
 
-def _form_evidence(company, current, days):
+def _form_evidence(company, current, days, binding=None):
     url = company.get("contact_form_url")
     if not url or not _public_url(url, company):
         return False
@@ -578,28 +655,11 @@ def _form_evidence(company, current, days):
         and row.get("source_url") == url and row.get("method") == "observed_contact_form"
         and is_contact_form_fields(row.get("form_fields"))
         and _observed(row) and _fresh(row.get("retrieved_at"), current, days)
-        and _bound_source(company, url, row) for row in company.get("sources") or [])
+        and _bound_source(company, url, row, binding) for row in company.get("sources") or [])
 
 
-def channel_status(company, policy=None, *, suppressions=None, freshness_days=180, now=None):
-    """Read-only channel-policy decision for one enterprise record.
-
-    A channel counts only when it has its own fresh, subject-bound observation.
-    ``mode=all`` requires every listed type; ``named_person_required`` requires a
-    named direct business contact among those channels.
-    """
-    from .policy import normalize_channel_policy
-    policy = normalize_channel_policy(policy)
-    current = observation_time(now) if now is not None else datetime.now(timezone.utc)
-    days = int(freshness_days)
-    item = next((row for row in filter_companies([deepcopy(company)], mode="max_coverage",
-                suppressions=suppressions, freshness_days=days, now=current)
-                if row.get("company_id") == company.get("company_id")), None)
-    if item is None:
-        return {"satisfied": False, "present": [], "missing": list(policy["allowed_types"]) + (
-            ["named_person"] if policy["named_person_required"] else []),
-            "policy": policy, "reason": "suppressed_or_unavailable"}
-    contacts, form = _usable_channels(item, current, days)
+def _channel_decision(policy, contacts, form):
+    """Channel-policy decision from already usable contacts/form (no filtering)."""
     present = []
     if any(contact.get("email") for contact in contacts):
         present.append("business_email")
@@ -631,7 +691,37 @@ def channel_status(company, policy=None, *, suppressions=None, freshness_days=18
             "reason": "channel_policy_satisfied" if satisfied else "channel_policy_missing"}
 
 
-def _usable_channels(company, current, days):
+def channel_status(company, policy=None, *, suppressions=None, freshness_days=180, now=None):
+    """Read-only channel-policy decision for one enterprise record.
+
+    A channel counts only when it has its own fresh, subject-bound observation.
+    ``mode=all`` requires every listed type; ``named_person_required`` requires a
+    named direct business contact among those channels. The public entry keeps
+    the standalone suppression/redaction pass; cohort callers use the prepared
+    helper below to avoid repeating it for every row.
+    """
+    from .policy import normalize_channel_policy
+    policy = normalize_channel_policy(policy)
+    current = observation_time(now) if now is not None else datetime.now(timezone.utc)
+    days = int(freshness_days)
+    item = next((row for row in filter_companies([deepcopy(company)], mode="max_coverage",
+                suppressions=suppressions, freshness_days=days, now=current)
+                if row.get("company_id") == company.get("company_id")), None)
+    if item is None:
+        return {"satisfied": False, "present": [], "missing": list(policy["allowed_types"]) + (
+            ["named_person"] if policy["named_person_required"] else []),
+            "policy": policy, "reason": "suppressed_or_unavailable"}
+    contacts, form = _usable_channels(item, current, days, _binding(item))
+    return _channel_decision(policy, contacts, form)
+
+
+def _channel_status_prepared(company, policy, *, current, days, usable=None):
+    """Internal channel decision for a row that already passed cohort filters."""
+    contacts, form = usable if usable is not None else _usable_channels(company, current, days)
+    return _channel_decision(policy, contacts, form)
+
+
+def _usable_channels(company, current, days, binding=None):
     """Return contacts with only fresh, observed, subject-bound channels."""
     contacts = []
     for contact in company.get("contacts") or []:
@@ -641,11 +731,11 @@ def _usable_channels(company, current, days):
             and contact.get("syntax_status") in {None, "", "valid", "unknown", "not_checked"}
             and contact.get("disposable_status") not in {"disposable", "yes", "true"}
             and validate_email(email, mx_lookup=lambda _: "not_checked")["syntax_status"] == "valid"
-            and _channel_evidence(company, contact, "email", email, current, days))
+            and _channel_evidence(company, contact, "email", email, current, days, binding))
         phone = contact.get("phone")
         phone_valid = bool(phone and contact.get("phone_status") == "valid"
             and validate_phone(phone, company.get("country_code"))["phone_status"] == "valid"
-            and _channel_evidence(company, contact, "phone", phone, current, days))
+            and _channel_evidence(company, contact, "phone", phone, current, days, binding))
         if not email_valid:
             for field in EMAIL_CHANNEL_FIELDS:
                 contact[field] = None
@@ -654,12 +744,70 @@ def _usable_channels(company, current, days):
                 contact[field] = None
         if email_valid or phone_valid:
             contacts.append(contact)
-    form = bool(company.get("contact_form_url")) and _form_evidence(company, current, days)
+    form = bool(company.get("contact_form_url")) and _form_evidence(company, current, days, binding)
     return contacts, form
 
 
+def _deliver_selected(selected, *, current, days, policy, suppressions, identity_version, channels=None):
+    """Apply delivery policy to rows that already passed balanced selection."""
+    normalized = None
+    if policy is not None:
+        from .policy import normalize_channel_policy
+        normalized = normalize_channel_policy(policy)
+    result = []
+    form_owners = {}
+    for item in ownership_order(selected, identity_version=identity_version):
+        if item.get("contact_form_url"):
+            form_owners.setdefault(item["contact_form_url"], item.get("company_id"))
+    for company in qualification_cohort(selected, identity_version=identity_version):
+        binding = _binding(company)
+        if company.get("status") == "excluded" or _website_ambiguous(company, binding):
+            continue
+        original = deepcopy(company)
+        contacts, form = _usable_channels(company, current, days, binding)
+        company["contacts"] = contacts
+        if not form or form_owners.get(company.get("contact_form_url")) != company.get("company_id"):
+            company["contact_form_url"] = None
+        if not contacts and not company.get("contact_form_url"):
+            continue
+        if normalized is not None:
+            status = _channel_status_prepared(company, normalized, current=current, days=days,
+                usable=(contacts, form and bool(company.get("contact_form_url"))))
+            if not status["satisfied"]:
+                continue
+            company["channel_policy"] = status
+        # Rebuild sources and aggregates after channel removal using the same
+        # export redaction logic. The row already passed the cohort ownership
+        # pass, so only the per-row finalizer is needed here.
+        clean = _finalize_company(company, original, filters={},
+            suppressed=suppression_sets(suppressions), mode="balanced")
+        if clean is None:
+            continue
+        clean["contactable"] = True
+        clean["delivery_channels"] = (["email"] if clean.get("email_count") else []) + (
+            ["phone"] if clean.get("phone_count") else []) + (["contact_form"] if clean.get("contact_form_url") else [])
+        clean["delivery_policy_version"] = DELIVERY_POLICY_VERSION
+        if normalized is not None:
+            from .policy import legacy_channels
+            clean_contacts, clean_form = _usable_channels(clean, current, days, binding)
+            clean["channel_policy"] = _channel_status_prepared(clean, normalized, current=current,
+                days=days, usable=(clean_contacts, clean_form))
+            clean["delivery_channels"] = legacy_channels(clean["channel_policy"]["present"])
+        for row in clean.get("sources") or []:
+            if row.get("entity_id") == clean.get("company_id") and row.get("field") == "contactable":
+                row["value"] = True
+                row["method"] = "derived_delivery_selection"
+        result.append(score_company(clean, copy=False))
+    wanted = set(normalize_channels(channels) or [])
+    if wanted:
+        # Presentation filter only: ownership and deduplication already ran, so
+        # hiding an enterprise can never transfer its channel to another one.
+        result = [row for row in result if wanted & set(row.get("delivery_channels") or [])]
+    return sorted(result, key=lambda row: (-row["lead_score"], str(row.get("company_id") or ""), normalize_name(row.get("company_name"))))
+
+
 def delivery_companies(companies, *, suppressions=None, freshness_days=180, now=None, policy=None,
-                       identity_version="legacy") -> list:
+                       identity_version="legacy", channels=None) -> list:
     """Detached, ranked qualified enterprises with a fresh public channel.
 
     Balanced export selection freezes existing deduplication/channel ownership
@@ -671,56 +819,50 @@ def delivery_companies(companies, *, suppressions=None, freshness_days=180, now=
     days = int(freshness_days)
     if days < 0:
         raise ValueError("freshness_days cannot be negative")
-    selected = filter_companies(companies, mode="balanced", suppressions=suppressions,
-                                freshness_days=days, now=current, identity_version=identity_version)
-    result = []
-    form_owners = {}
-    for item in ownership_order(selected, identity_version=identity_version):
-        if item.get("contact_form_url"):
-            form_owners.setdefault(item["contact_form_url"], item.get("company_id"))
-    for company in qualification_cohort(selected, identity_version=identity_version):
-        if company.get("status") == "excluded" or _website_ambiguous(company):
-            continue
-        original = deepcopy(company)
-        contacts, form = _usable_channels(company, current, days)
-        company["contacts"] = contacts
-        if not form or form_owners.get(company.get("contact_form_url")) != company.get("company_id"):
-            company["contact_form_url"] = None
-        if not contacts and not company.get("contact_form_url"):
-            continue
-        if policy is not None:
-            from .policy import normalize_channel_policy
-            normalized = normalize_channel_policy(policy)
-            status = channel_status(company, normalized, freshness_days=days, now=current)
-            if not status["satisfied"]:
-                continue
-            company["channel_policy"] = status
-        redact_qualification(company, original, {contact["email"] for contact in contacts if contact.get("email")},
-            {contact["phone"] for contact in contacts if contact.get("phone")}, suppression_sets(suppressions))
-        # Rebuild sources and aggregates after channel removal using the same
-        # export redaction logic. A form-only enterprise survives balanced mode.
-        clean = filter_companies([company], mode="balanced", freshness_days=days, now=current,
-                                 identity_version=identity_version)[0]
-        clean["contactable"] = True
-        clean["delivery_channels"] = (["email"] if clean.get("email_count") else []) + (
-            ["phone"] if clean.get("phone_count") else []) + (["contact_form"] if clean.get("contact_form_url") else [])
-        clean["delivery_policy_version"] = DELIVERY_POLICY_VERSION
-        if policy is not None:
-            from .policy import legacy_channels, normalize_channel_policy
-            clean["channel_policy"] = channel_status(clean, normalize_channel_policy(policy),
-                freshness_days=days, now=current)
-            clean["delivery_channels"] = legacy_channels(clean["channel_policy"]["present"])
-        for row in clean.get("sources") or []:
-            if row.get("entity_id") == clean.get("company_id") and row.get("field") == "contactable":
-                row["value"] = True
-                row["method"] = "derived_delivery_selection"
-        result.append(score_company(clean))
-    return sorted(result, key=lambda row: (-row["lead_score"], str(row.get("company_id") or ""), normalize_name(row.get("company_name"))))
+    prepared = _prepare_cohort(companies, suppressions=suppressions, freshness_days=days,
+                               now=current, identity_version=identity_version)
+    selected = _prepared_rows(prepared, 'balanced')
+    return _deliver_selected(selected, current=current, days=days, policy=policy,
+        suppressions=suppressions, identity_version=identity_version, channels=channels)
+
+
+def pending_companies(companies, deliverable, *, suppressions=None, freshness_days=180,
+                      now=None, identity_version="legacy", qualified_view=None,
+                      uncertain_view=None) -> list:
+    """保留但不可交付的待办企业：合格缺渠道 + 待确认，排除已可交付的。
+
+    spec b2b-leads-2.6 §4.1C：可交付/待办口径只在 selection 定义一次，
+    runs 的进度投影与 live 页面必须给出同一个数，不得各算一套。
+    """
+    deliverable_ids = {row.get("company_id") for row in deliverable}
+    qualified_rows = [row for row in companies
+                      if (row.get("qualification") or {}).get("decision") == "qualified"]
+    qualified = qualified_view if qualified_view is not None else filter_companies(
+        qualified_rows, mode="max_coverage", suppressions=suppressions,
+        freshness_days=freshness_days, now=now, identity_version=identity_version)
+    uncertain_rows = [row for row in companies
+                      if (row.get("qualification") or {}).get("decision") == "uncertain"]
+    uncertain = uncertain_view if uncertain_view is not None else (
+        filter_companies(uncertain_rows, mode="max_coverage",
+                         suppressions=suppressions, freshness_days=freshness_days,
+                         now=now, identity_version=identity_version)
+        if uncertain_rows else [])
+    pending = [row for row in qualified if row.get("company_id") not in deliverable_ids]
+    pending += [row for row in uncertain if row.get("company_id") not in deliverable_ids]
+    return pending
+
+
+def prepare_cohort(companies, *, filters=None, suppressions=None, freshness_days=180,
+                   now=None, identity_version="legacy"):
+    """Public name for the shared prepared cohort used by export/metrics."""
+    return _prepare_cohort(companies, filters=filters, suppressions=suppressions,
+        freshness_days=freshness_days, now=now, identity_version=identity_version)
 
 
 def select_export_companies(companies, *, mode="balanced", filters=None, suppressions=None,
                             freshness_days=180, now=None, delivery_only=False, delivery_limit=None,
-                            policy=None, identity_version="legacy"):
+                            policy=None, identity_version="legacy", channels=None, prepared=None,
+                            delivery_sink=None):
     """Return the common output projection and its uncapped delivery count.
 
     Reapply delivery after channel filters so counts and primary channels always
@@ -728,18 +870,40 @@ def select_export_companies(companies, *, mode="balanced", filters=None, suppres
     """
     eligible_count = None
     export_input = companies
+    wanted = set(normalize_channels(channels) or [])
+    current = observation_time(now) if now is not None else datetime.now(timezone.utc)
+    days = int(freshness_days)
+    if days < 0:
+        raise ValueError("freshness_days cannot be negative")
     if delivery_only:
-        export_input = delivery_companies(companies, suppressions=suppressions,
-                                         freshness_days=freshness_days, now=now, policy=policy,
-                                         identity_version=identity_version)
+        # One full-cohort prepared view and one delivery pass. The later
+        # revalidation runs on the already-selected subset, not the full cohort.
+        prepared = prepared or _prepare_cohort(companies, suppressions=suppressions,
+            freshness_days=days, now=current, identity_version=identity_version)
+        delivery_rows = _deliver_selected(_prepared_rows(prepared, 'balanced'),
+            current=current, days=days, policy=policy, suppressions=suppressions,
+            identity_version=identity_version)
+        if wanted:
+            # Presentation channel filter only; ownership already froze on the
+            # full delivery cohort. Keep the full rows for the shared summary.
+            export_input = [row for row in delivery_rows
+                            if wanted & set(row.get("delivery_channels") or [])]
+        else:
+            export_input = delivery_rows
         eligible_count = len(export_input)
+        if delivery_sink is not None:
+            delivery_sink['rows'] = delivery_rows
+            delivery_sink['eligible'] = eligible_count
     selected = filter_companies([row for row in export_input if row.get("status") != "excluded"],
-        mode=mode, filters=filters, suppressions=suppressions, freshness_days=freshness_days, now=now,
+        mode=mode, filters=filters, suppressions=suppressions, freshness_days=days, now=current,
         identity_version=identity_version)
     if delivery_only:
-        selected = delivery_companies(selected, suppressions=suppressions,
-                                      freshness_days=freshness_days, now=now, policy=policy,
-                                      identity_version=identity_version)
+        # Presentation filters can remove the channel that satisfied the policy
+        # (for example contact_type=phone). Revalidate the already-filtered
+        # subset; re-running the full balanced selection here would repeat the
+        # ownership/redaction pass without changing any row.
+        selected = _deliver_selected(selected, current=current, days=days, policy=policy,
+            suppressions=suppressions, identity_version=identity_version, channels=wanted)
         if delivery_limit is not None:
             if isinstance(delivery_limit, bool) or int(delivery_limit) < 1:
                 raise ValueError("delivery_limit must be positive")

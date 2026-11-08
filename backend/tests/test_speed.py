@@ -110,11 +110,13 @@ def test_advance_continues_after_admission_response_is_lost(
     process = runs.process
     def interrupted(*args, **kwargs):
         raise RuntimeError('synthetic interruption after append')
-    monkeypatch.setattr(runs, 'process', interrupted)
+    # S10 拆包：advance 在 app.runs.state 内部调用 process，补丁打到该子模块。
+    import app.runs.state as runs_state
+    monkeypatch.setattr(runs_state, 'process', interrupted)
     body = {'candidates': [packaging_candidate]}
     with pytest.raises(RuntimeError):
         runs.advance('advance-retry', body, chunk_id='same')
-    monkeypatch.setattr(runs, 'process', process)
+    monkeypatch.setattr(runs_state, 'process', process)
     result = runs.advance('advance-retry', body, chunk_id='same')
     assert result['processed_jobs'] == result['research']['discovered'] == 1
     with transaction() as session:

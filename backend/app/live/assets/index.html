@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>实时成果页面</title>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<a class="skip-link" href="#results">跳到客户列表</a>
+
+<header class="topbar">
+  <div class="identity">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div class="identity-text">
+      <h1 id="run-name">正在读取成果…</h1>
+      <p id="run-meta" class="muted">尚未连接</p>
+    </div>
+  </div>
+  <div class="status-block">
+    <span id="status-chip" class="chip chip-unknown">未知</span>
+    <p id="status-note" class="muted small"></p>
+    <p id="updated-at" class="muted small">最后更新：未知</p>
+  </div>
+</header>
+
+<div id="banner-offline" class="banner banner-error" role="alert" hidden>
+  <strong>已离线。</strong><span id="offline-text">无法连接本机查看服务，当前显示最后一次成功读取的内容。</span>
+</div>
+<div id="banner-pending" class="banner banner-warn" role="alert" hidden>
+  <strong>页面可能已过期。</strong><span id="pending-text"></span>
+</div>
+<div id="banner-warning" class="banner banner-warn" role="status" hidden></div>
+<div id="banner-new" class="banner banner-info" role="status" hidden>
+  <span id="new-text"></span>
+  <button id="apply-update" class="link-button" type="button">应用更新</button>
+</div>
+<div id="banner-demo" class="banner banner-info" role="status" hidden>
+  演示数据：可查看页面，但不能作为正式获客名单导出。
+</div>
+
+<main>
+  <section class="metrics" aria-label="进度指标">
+    <article class="metric">
+      <span class="metric-label">目标</span>
+      <strong id="m-target" class="metric-value">—</strong>
+      <span class="metric-hint">冻结任务目标，不随结果调整</span>
+    </article>
+    <article class="metric">
+      <span class="metric-label">已准入</span>
+      <strong id="m-admitted" class="metric-value">—</strong>
+      <span class="metric-hint">核心已接收的去重前候选，不是全网发现量</span>
+    </article>
+    <article class="metric metric-primary">
+      <span class="metric-label">已确认可交付</span>
+      <strong id="m-deliverable" class="metric-value">—</strong>
+      <span id="m-deliverable-hint" class="metric-hint">满足冻结客群与渠道政策</span>
+    </article>
+    <article class="metric">
+      <span class="metric-label">待核实</span>
+      <strong id="m-pending" class="metric-value">—</strong>
+      <span class="metric-hint">必要事实、主体或渠道仍待确认</span>
+    </article>
+    <article class="metric">
+      <span class="metric-label">剩余缺口</span>
+      <strong id="m-shortfall" class="metric-value">—</strong>
+      <span class="metric-hint">目标减去已确认可交付</span>
+    </article>
+    <article class="metric">
+      <span class="metric-label">已发现</span>
+      <strong id="m-discovered" class="metric-value metric-unknown">暂不可得</strong>
+      <span id="m-discovered-hint" class="metric-hint">本机核心不统计全网发现量</span>
+    </article>
+  </section>
+
+  <section class="progress-line" aria-label="处理进度">
+    <span id="progress-text" class="muted small">进度：未知</span>
+    <span id="active-time" class="muted small">研究时间：未知</span>
+    <span id="version-text" class="muted small">版本：未知</span>
+    <span id="coverage-text" class="muted small">渠道覆盖：未知</span>
+  </section>
+
+  <section class="toolbar" aria-label="筛选与导出">
+    <div class="filters">
+      <label class="field">
+        <span>搜索</span>
+        <input id="q" type="search" placeholder="公司、业务、城市或域名" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>国家</span>
+        <select id="country"><option value="">全部国家</option></select>
+      </label>
+      <label class="field">
+        <span>渠道</span>
+        <select id="channel">
+          <option value="">全部渠道</option>
+          <option value="email">有邮箱</option>
+          <option value="phone">有电话</option>
+          <option value="contact_form">有联系表单</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>排序</span>
+        <select id="sort">
+          <option value="updated">最近更新</option>
+          <option value="name">名称</option>
+          <option value="score">优先分</option>
+        </select>
+      </label>
+      <button id="clear" class="ghost" type="button">清除筛选</button>
+    </div>
+    <div class="export-block">
+      <button id="export" class="primary" type="button" disabled>导出当前筛选 Excel</button>
+      <span id="export-hint" class="muted small">将导出 0 家可交付企业</span>
+      <div id="export-result" class="export-result" hidden></div>
+    </div>
+  </section>
+
+  <nav class="tabs" role="tablist" aria-label="客户状态">
+    <button id="tab-deliverable" class="tab is-active" role="tab" aria-selected="true" type="button">
+      已确认可交付 <span id="count-deliverable" class="tab-count">0</span>
+    </button>
+    <button id="tab-pending" class="tab" role="tab" aria-selected="false" type="button">
+      待核实 <span id="count-pending" class="tab-count">0</span>
+    </button>
+  </nav>
+
+  <p id="list-summary" class="list-summary" aria-live="polite">当前显示 0 家 / 此筛选共 0 家</p>
+
+  <section id="results" class="results" tabindex="-1" aria-label="客户列表">
+    <ul id="list" class="cards"></ul>
+    <p id="empty" class="empty" hidden></p>
+    <div class="more"><button id="more" class="ghost" type="button" hidden>加载更多</button></div>
+  </section>
+</main>
+
+<footer class="page-foot">
+  <p>本页为只读视图：数据来自已提交的核心状态，页面不采集、不改任务状态、不自动导出。</p>
+  <p>公开、来源可追溯不代表已实际验证可送达；待核实企业不计入可交付，也不进入正式导出。</p>
+</footer>
+
+<aside id="drawer" class="drawer" role="dialog" aria-modal="false" aria-labelledby="drawer-title" hidden>
+  <header class="drawer-head">
+    <h2 id="drawer-title">客户详情</h2>
+    <button id="drawer-close" class="ghost" type="button" aria-label="关闭详情">关闭</button>
+  </header>
+  <div id="drawer-body" class="drawer-body"></div>
+</aside>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="/assets/app.js" defer></script>
+</body>
+</html>

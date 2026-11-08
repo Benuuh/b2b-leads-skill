@@ -251,11 +251,24 @@ def capabilities():
     """Return the static capability envelope; never touches the database."""
     from app.persistence import SCHEMA_REVISION
     from app.release import CORE_VERSION, SKILL_VERSION
+    from app.secrets import secrets_status
     return {
         'core_version': CORE_VERSION,
         'skill_version': SKILL_VERSION,
         'schema_revision': SCHEMA_REVISION,
         'rule_version': RULE_VERSION,
+        # 密钥启动校验状态（spec 2.6 §3.5）：capabilities 离线可读，
+        # 让 agent 在启动后第一时间知道信封/游标/付费源密钥是否就绪。
+        'secrets': secrets_status(),
+        # The association-discovery proposal is not yet a released collector.
+        # Keep these limitations visible in the same offline envelope used
+        # before starting a research run.
+        'discovery_limitations': {
+            'shared_directory_page_budget': 'unavailable',
+            'automatic_js_rendering': 'unavailable',
+            'country_rule_version_dispatch': 'unavailable',
+            'country_evidence': 'legacy_literal_matching',
+        },
         'identity_version': IDENTITY_VERSION,
         'channel_policy_version': CHANNEL_POLICY_VERSION,
         'metrics_version': METRICS_VERSION,

@@ -39,7 +39,10 @@ def test_failed_revocation_transaction_preserves_original_files(clean_db, monkey
         # A real PostgreSQL error after revocation/outbox inserts forces the
         # transaction to roll back before it could perform any unlink.
         object_session(row).execute(text('SELECT 1 / 0'))
-    monkeypatch.setattr(runs, '_suppression_view', fail_after_queued)
+    # S10 拆包后 runs 是包：suppression_add 在 app.runs.state 里调用该辅助函数，
+    # 补丁必须打到实际持有绑定的子模块。
+    import app.runs.state as runs_state
+    monkeypatch.setattr(runs_state, '_suppression_view', fail_after_queued)
     with pytest.raises(DBAPIError):
         runs.suppression_add('domain', 'example.org')
     assert all(persistence.artifact_path(key).is_file() for key in keys)
@@ -54,7 +57,8 @@ def test_failed_company_delete_transaction_keeps_snapshots(clean_db, monkeypatch
     keys = seed_files()
     def fail_audit(*args, **kwargs):
         raise RuntimeError('failure before commit')
-    monkeypatch.setattr(runs, '_audit', fail_audit)
+    import app.runs.state as runs_state
+    monkeypatch.setattr(runs_state, '_audit', fail_audit)
     with pytest.raises(RuntimeError, match='before commit'):
         runs.delete_company('file-company')
     assert all(persistence.artifact_path(key).is_file() for key in keys)

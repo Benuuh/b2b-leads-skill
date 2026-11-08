@@ -1,13 +1,49 @@
 ---
 name: b2b-leads
 metadata:
-  version: "2.2.0"
-description: Research B2B target companies and their public business contact channels for any industry or country, continue saved acquisition batches, and deliver sourced Chinese Excel lead lists through the local Python acquisition core. Use for requests such as finding manufacturers, distributors, integrators or service providers, sourcing prospective business customers, or continuing a saved lead research run.
+  version: "2.7.0"
+description: "Skill 2.7.0 · Research B2B target companies and their public business contact channels for any industry or country, continue saved acquisition batches, and deliver sourced Chinese Excel lead lists through the local Python acquisition core. Use for requests such as finding manufacturers, distributors, integrators or service providers, sourcing prospective business customers, or continuing a saved lead research run."
 ---
 
 # B2B customer research
 
-> 版本标记：Skill 2.2.0 · 核心 2.2.0 · 规则 b2b-policy-2。以 `capabilities` 返回的 `skill_version`/`core_version`/`rule_version` 和发布清单为准；`VERSION` 文件记录同一版本。
+> 版本标记：Skill 2.7.0 · 核心 2.7.0 · 规则 b2b-policy-2。以 `capabilities` 返回的 `skill_version`/`core_version`/`rule_version` 和发布清单为准；`VERSION` 文件记录同一版本。
+
+## 边界（每次启动先读）
+
+Skill 只能引用已注册的 Tool；不得扩大数据范围、降低证据要求、绕过确认策略。每次启动先跑 `capabilities` 确认 tool 列表与密钥状态（`secrets` 字段），再执行任何动作。
+
+| 不许做 | 具体表现 | 违反时 |
+| --- | --- | --- |
+| 扩大数据范围 | 读不属于当前 run 的公司、别的 workspace 的名单 | 拒绝并报告 |
+| 降低证据要求 | 没证据就 `advance`；拿搜索摘要当事实 | 拒绝，要求补证据 |
+| 绕过确认 | 未经确认就 `export` / `suppressions` / `delete-company` | 拒绝，先请求用户确认 |
+| 自行扩表 | 往 spec 塞未注册字段或运算符 | core 报错；不得改 core 绕过 |
+| 隐式重试 | 网络失败后换参数重试，同一条算两次 | 相同 chunk 重放；超出记 `unknown_outcome` |
+
+被拒之后 run 怎么走：单次被拒 → 动作不执行、状态不变、继续；连续 3 次被拒 → 自动 `pause`，reason=`repeated_denied`。
+
+并发与页数不算扩大数据范围：同一 run 内多开连接、多抓页面是"同一范围内的效率"；跨 run、跨 workspace 才算扩大。
+
+## 结构化数据源（2.6，可选）
+
+`discover` 把公开数据源的查询条件翻译成**未核实候选池**。硬约束（§3.1.3）：未核实候选不是候选公司——不进合格计数、不进去重池；只有带证据 `advance` 之后才算。`discover --list` 的数字永远不能加进 discovered/qualified。
+
+```bash
+control.py discover --run RUN --source eu_ted --limit 200   # 或 eurostat_comext | google_places | all
+control.py discover --run RUN --list [--source X]
+control.py discover --run RUN --reject <id> --reason "..."   # reason 必填，空串报错
+control.py discover --run RUN --explain <id> --yes           # 解密原始记录信封，需人确认
+control.py sources                                           # 各源可用性与凭据状态
+```
+
+- 先看 `capabilities` 的 `secrets`：信封密钥生产缺失会**拒绝启动**，开发降级明文并打 `dev-insecure`；游标密钥配了就必须 ≥32 字节。
+- 单源失败不阻塞其他源（`source_error`/`source_empty`/`source_limit`/`source_parse_error`）；**三源全挂**时 run 置 `partial_no_source`，保留已有候选、不再空转。
+- 覆盖不到东南亚（遗留）。三源都不可用时用 `discover --run RUN --legacy-search` 回到人工发现流程，run 标 `mode: legacy`，产出结构一致但没有 `source_ref`。
+
+## 名单之后：开发信（下游 skill）
+
+本 Skill 只产出名单与证据，不发信。需要写信时交给独立的 `outreach-letter` skill：输入 `company_id` + 证据 + 联系人角色 + 阶段，输出 `letters/<company_id>.md` 交人工发送。证据为空不生成信；每封信必须能指回一条证据。
 
 Turn the user's customer requirements into a sourced company list. Reuse this project's durable Python core for qualification, channel checks, deduplication, suppression, scoring, progress and export. The Skill is the only entrypoint; commands call the core directly without an HTTP API or login. Do not automatically send outreach, write CRM records, buy sources or ask for a new API key.
 
@@ -25,6 +61,10 @@ Read [the controller reference](references/controller.md) for commands. Read [th
 ## Research, precheck and admit
 
 Use the current Agent's available native internet search and page-open tools. Start with information-rich directories and association member pages that can support multiple companies. Batch independent queries and page opens up to the available tool limits; use a tool's multi-query/multi-URL input when supported. Do not research one company from start to finish before discovering the next. Search snippets are discovery hints, not factual evidence. If tools are unavailable, save a checkpoint and pause; explain the missing capability without inventing results or falling back to a paid provider.
+
+After the target is confirmed, look for relevant national and local (state, provincial, city or port) associations as well as other public directories and registries. When an accessible local directory exists, attempt at least one relevant to the target region; otherwise record why it was not found or could not be accessed. Keep a source ledger in the checkpoint or a referenced run artifact: name, URL, evidence of directory identity and relevance, check time, access/public status, expected fields, pages viewed, discovered entries and reason for unavailability. Distinguish untried, inaccessible and viewed with no relevant entries. Never treat membership or category alone as proof of qualification; bind each observed field to its own entry and retain its original excerpt. Confirm website ownership independently.
+
+The current core does not reserve or charge externally opened shared directory pages against the run's page budget. Tool counters are not a substitute. Do not run an automatic shared-page collection path while that accounting is unavailable; record manual discovery requests and pages separately and disclose that the unified limit is unverified. Automatic JS rendering is unavailable; do not bypass access controls, robots, CAPTCHA or rate limits. When a source or search is unavailable, record the exact tool/path and reason, try an allowed alternative, and pause with a checkpoint if no usable source remains. A failure on one network path does not prove universal inaccessibility.
 
 For each candidate establish identity and the requested qualification facts: headquarters or operating country, business model, own products/services, customer industries. Once necessary facts and a confirmed official website are ready, hand the candidate to `advance` even if its channel is missing: the core can fetch the missing channels concurrently while the Agent discovers more companies. Do not manually open Contact/Team pages first when the core can do that bounded work. Include channels already observed on a directory or qualification page; use native research for channels still missing after processing or when no usable official site exists. Facts must be bound to the candidate itself: an excerpt must name the company as its subject. Customer stories, partner capabilities, group pages, search summaries, assertions and confidence scores never prove the candidate's own offering. Confirm an official website belongs to this company before attaching it; a matching name alone is insufficient. A shared domain may hold distinct legal entities: keep entity evidence and do not merge on domain alone.
 
@@ -51,6 +91,12 @@ Use `supplement --company-id ... --operation-key ...` to add incremental evidenc
 Export after processing using default `xlsx`, `balanced`, `zh`: four tables with Chinese headers. CSV is optional on request. Only qualified, unsuppressed, deduplicated companies meeting the frozen channel policy count toward delivery. The workbook, snapshots and completion count share that policy; never change the denominator.
 
 Return the local Excel link and quality report with discovered, matched, contactable, excluded, uncertain, evidence-missing and shortfall counts, plus the effective spec/rule/release versions. State that public channels have source evidence but actual delivery has not been tested. If fewer than requested qualify, deliver the available results and name the remaining gap; do not claim the full batch or an 8-hour service level was proven. Report snapshot time separately from latest progress. A small live smoke test is distinct from independent human quality acceptance or a completed 200-company run.
+
+## Live results page
+
+When the user wants to watch a run or browse the list themselves, start `live --run RUN` through the controller. It writes one committed-state projection inside the managed artifact directory and serves a short-lived page bound only to `127.0.0.1` with a random per-process token. The command is foreground, exits on inactivity or Ctrl+C, never collects, never changes a run, never exports by itself and never opens a browser unless the user passes `--open`. Use `--rebuild-only` to refresh the saved page without serving.
+
+The page shows the frozen target, admitted, deliverable, pending, shortfall, real status and observation time with searchable, filterable evidence. Treat it as a read-only view: deliverable counts and exports come from the same core selection. Never treat the projection file as an authority, never copy contacts from it into messages automatically, and never claim that a page refresh proves the run is still alive. Pending enterprises are not deliverable and do not enter the formal export.
 
 ## Saved runs and administration
 

@@ -15,8 +15,11 @@ project.json
 # Runtime, business data, exports, backups and private work folders
 .venv/
 .runtime/
+.tmp/
+.workbuddy/
 data/
 artifacts/
+backup/
 backups/
 /_*/
 *.dump

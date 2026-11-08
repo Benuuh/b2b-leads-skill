@@ -232,14 +232,23 @@ def calculate_metrics(cohort, channels=None, context=None):
     suppressions = context.get("suppressions") or []
     suppressed = suppression_sets(suppressions)
     freshness_days = int(context.get("freshness_days", 180))
-    rows = coalesce_companies(list(cohort or []))
-    original = [row for row in rows if eligibility(row)[0] == "qualified"]
+    prepared_rows = context.get("prepared_rows")
+    prepared_qualified = context.get("qualified_rows")
+    rows = list(prepared_rows) if prepared_rows is not None else coalesce_companies(list(cohort or []))
+    original = list(prepared_qualified) if prepared_qualified is not None else [
+        row for row in rows if eligibility(row)[0] == "qualified"]
     qualified = [row for row in original if not _suppressed(row, suppressed)]
-    batch_channels = filter_companies(qualified, mode="max_coverage", suppressions=suppressions, freshness_days=freshness_days, now=as_of)
+    batch_channels = context.get("batch_channels")
+    if batch_channels is None:
+        batch_channels = filter_companies(qualified, mode="max_coverage", suppressions=suppressions,
+                                          freshness_days=freshness_days, now=as_of)
     company_filters = {key: value for key, value in normalized_filters.items() if key in COMPANY_FILTERS}
     # Property filters may define a sub-cohort; channel and score filters never do.
     view_cohort = [row for row in qualified if _property_matches(row, company_filters)]
-    view_channels = filter_companies(view_cohort, mode=mode, filters=normalized_filters, suppressions=suppressions, freshness_days=freshness_days, now=as_of)
+    view_channels = context.get("view_channels")
+    if view_channels is None:
+        view_channels = filter_companies(view_cohort, mode=mode, filters=normalized_filters,
+                                         suppressions=suppressions, freshness_days=freshness_days, now=as_of)
     supplied = channels or {}
     output = supplied.get("output") if isinstance(supplied, dict) else supplied
     if output is None:

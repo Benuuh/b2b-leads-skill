@@ -149,3 +149,33 @@ class PendingArtifactDelete(Base):
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(String(200))
+
+
+class ProspectSourceCandidate(Record, Base):
+    """未核实候选池（spec b2b-leads-2.6 §3.1）。
+
+    硬约束：这里不是候选公司。不进合格计数、不进去重池；
+    只有 agent 带 evidence ``advance`` 之后才进入正式候选。
+    """
+    __tablename__ = 'prospect_source_candidates'
+    run_id: Mapped[str] = mapped_column(ForeignKey('skill_runs.id', ondelete='CASCADE'), index=True)
+    source: Mapped[str] = mapped_column(String(40))
+    source_ref: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(String(512))
+    domain: Mapped[str | None] = mapped_column(String(253))
+    country: Mapped[str | None] = mapped_column(String(2))
+    city: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(20), default='pending', index=True)
+    reject_reason: Mapped[str | None] = mapped_column(Text)
+    raw_json: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class ProspectSourceEnvelope(Record, Base):
+    """原始记录信封：审计时还原"当时源里给的是什么"，平时不读。"""
+    __tablename__ = 'prospect_source_envelopes'
+    run_id: Mapped[str] = mapped_column(ForeignKey('skill_runs.id', ondelete='CASCADE'), index=True)
+    source: Mapped[str] = mapped_column(String(40))
+    source_ref: Mapped[str] = mapped_column(Text)
+    envelope_ciphertext: Mapped[str] = mapped_column(Text)
+    envelope_sha256: Mapped[str] = mapped_column(String(64))
+    fetched_at: Mapped[object] = mapped_column(DateTime(timezone=True), default=utcnow)

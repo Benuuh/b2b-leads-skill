@@ -16,3 +16,13 @@ def release_identity():
             "schema_revision": SCHEMA_REVISION,
             "release_id": manifest.get("release_id", "development"),
             "git_commit": manifest.get("git_commit")}
+
+
+def versions():
+    """Version envelope printed by every command and embedded in each result."""
+    from app.capabilities import RULE_VERSION
+    identity = release_identity()
+    return {"skill_version": SKILL_VERSION, "core_version": CORE_VERSION,
+            "rule_version": RULE_VERSION, "schema_revision": identity["schema_revision"],
+            "release_id": identity["release_id"], "git_commit": identity.get("git_commit"),
+            "installed": identity["release_id"] != "development"}

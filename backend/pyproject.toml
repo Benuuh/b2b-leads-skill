@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supply-chain-acquisition"
-version = "2.2.0"
+version = "2.7.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "sqlalchemy==2.0.44", "psycopg[binary]==3.2.12", "alembic==1.17.0",
@@ -18,6 +18,9 @@ test = ["pytest==8.4.2", "pytest-cov==7.0.0"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.live" = ["assets/*.html", "assets/*.css", "assets/*.js"]
 
 [project.scripts]
 b2b-leads = "app.cli:main"

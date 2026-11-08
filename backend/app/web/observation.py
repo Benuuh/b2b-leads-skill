@@ -55,6 +55,7 @@ def current_host_limiter():
     return _context.get().get('host_limiter')
 
 
+# TODO(dead?): 全仓零引用（S10 扫描）；保留以兼容外部调用，确认后删除。
 def query_identifier(query):
     """Stable opaque ID for a frozen query; never store the query text in logs."""
     if not query:

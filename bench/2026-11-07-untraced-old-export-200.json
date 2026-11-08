@@ -1,0 +1,197 @@
+{
+ "app_root": "<repo>/.tmp/baseline-2.6.0/backend",
+ "scenario": "export",
+ "repeats": 5,
+ "cohorts": [
+  {
+   "scenario": "export",
+   "cohort": 200,
+   "repeats": 5,
+   "p50_seconds": 24.646931,
+   "p95_seconds": 24.716723,
+   "mean_seconds": 24.6257866,
+   "stdev_seconds": 0.07437629231038673,
+   "peak_rss": null,
+   "tracemalloc_peak": null,
+   "sql_calls_p50": 23,
+   "selection_calls_last": {
+    "select_export_companies": 2,
+    "delivery_companies": 7,
+    "filter_companies": 4214,
+    "coalesce_companies": 4222,
+    "channel_status": 2800
+   },
+   "rounds": [
+    {
+     "repeat": 1,
+     "seconds": 24.646931,
+     "sql_calls": 23,
+     "selection_calls": {
+      "select_export_companies": 2,
+      "delivery_companies": 7,
+      "filter_companies": 4214,
+      "coalesce_companies": 4222,
+      "channel_status": 2800
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    },
+    {
+     "repeat": 2,
+     "seconds": 24.669048,
+     "sql_calls": 23,
+     "selection_calls": {
+      "select_export_companies": 2,
+      "delivery_companies": 7,
+      "filter_companies": 4214,
+      "coalesce_companies": 4222,
+      "channel_status": 2800
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    },
+    {
+     "repeat": 3,
+     "seconds": 24.598143,
+     "sql_calls": 23,
+     "selection_calls": {
+      "select_export_companies": 2,
+      "delivery_companies": 7,
+      "filter_companies": 4214,
+      "coalesce_companies": 4222,
+      "channel_status": 2800
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    },
+    {
+     "repeat": 4,
+     "seconds": 24.716723,
+     "sql_calls": 23,
+     "selection_calls": {
+      "select_export_companies": 2,
+      "delivery_companies": 7,
+      "filter_companies": 4214,
+      "coalesce_companies": 4222,
+      "channel_status": 2800
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    },
+    {
+     "repeat": 5,
+     "seconds": 24.498088,
+     "sql_calls": 23,
+     "selection_calls": {
+      "select_export_companies": 2,
+      "delivery_companies": 7,
+      "filter_companies": 4214,
+      "coalesce_companies": 4222,
+      "channel_status": 2800
+     },
+     "tracemalloc_peak": null,
+     "rss_peak": 0,
+     "result_keys": [
+      "artifact_hash",
+      "current_progress",
+      "delivery_policy",
+      "delivery_policy_version",
+      "export_id",
+      "external_tool_usage",
+      "file",
+      "filename",
+      "format",
+      "id",
+      "manifest",
+      "path",
+      "quality_report",
+      "report_file",
+      "run_id",
+      "snapshot_at",
+      "summary"
+     ]
+    }
+   ]
+  }
+ ],
+ "generated_at": "2026-11-07T02:32:00.259795+00:00",
+ "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+ "note": "isolated sca_bench database; fixed deterministic cohort",
+ "app_file": "<repo>/backend/app/__init__.py"
+}
