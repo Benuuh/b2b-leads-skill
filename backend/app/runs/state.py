@@ -327,8 +327,15 @@ def _claim(run_id, token, workers=1):
         plan = deepcopy(run.plan_json)
         # The ten-page ceiling belongs to the enterprise, including retries.
         # Completed attempts consume budget even when their contact stage fails.
-        per_company = max(0, min(10, plan.get('page_limit_per_company', 10))
-                          - job.output_json.get('pages_used', 0))
+        accounted = int((job.output_json or {}).get('pages_used', 0) or 0)
+        # Directory detail pages share this company's cap only after a contracted
+        # run has actually held one. Zero holds skip the ledger read, so a
+        # company-only claim stays on the previous arithmetic.
+        if plan.get('page_budget_contract') == 'shared-page-budget-1' and int(
+                (run.stats_json or {}).get('directory_detail_holds') or 0):
+            from app.page_budget import directory_detail_pages
+            accounted += directory_detail_pages(session, run.id, job.entity_key)
+        per_company = max(0, min(10, plan.get('page_limit_per_company', 10)) - accounted)
         stats = deepcopy(run.stats_json)
         reserved = int(stats.get('reserved_pages') or 0)
         available = max(0, plan.get('page_limit_total', 10000) - stats.get('pages', 0) - reserved)

@@ -299,7 +299,7 @@ def test_brief_command_stays_offline(tmp_path, monkeypatch, capsys):
     assert payload['defaults_applied']
     summary = payload['confirmation_summary']
     rendered = json.dumps(summary, ensure_ascii=False)
-    for phrase in ('无自动 JS 渲染', '无共享目录统一页面预算', '字面匹配', '未覆盖东南亚', '不承诺'):
+    for phrase in ('无自动 JS 渲染', '不等于目录自动采集', '拒绝自动共享目录采集', '字面匹配', '未覆盖东南亚', '不承诺'):
         assert phrase in rendered
     assert '保证找满' not in rendered and '将在 8 小时内' not in rendered
     assert summary['evidence_limits']['codes']['structured_discovery_southeast_asia'] == 'not_covered'

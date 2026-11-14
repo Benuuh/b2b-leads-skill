@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <a href="https://github.com/Benuuh/b2b-leads-skill/actions/workflows/ci.yml"><img src="https://github.com/Benuuh/b2b-leads-skill/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/schema-skill__v2__003-6f42c1" alt="Schema skill_v2_003">
+  <img src="https://img.shields.io/badge/schema-skill__v2__004-6f42c1" alt="Schema skill_v2_004">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT License"></a>
 </p>
 

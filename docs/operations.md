@@ -22,7 +22,9 @@ Windows 本地部署可将 PostgreSQL 二进制放在 `.runtime/pgsql/bin`、数
 .\.venv\Scripts\python.exe scripts/b2b_leads.py export --run us-forwarders-01
 ```
 
-输入形状和证据要求见 [Skill 控制参考](../skills/b2b-leads/references/controller.md)。新建批次先运行离线 `brief`，向用户展示完整确认摘要并得到明确确认后，再把 `confirm_hash` 传给 `create`。未写 `spec_version` 的新任务冻结为 v2；显式 v1 与已保存的 v1 批次保持原语义。确认摘要会写明当前取证限制：无自动 JS 渲染、无共享目录统一预算、国家证据仍为字面匹配、结构化发现源未覆盖东南亚。摘要里的数量和时限是预算口径，不是完成承诺。
+输入形状和证据要求见 [Skill 控制参考](../skills/b2b-leads/references/controller.md)。新建批次先运行离线 `brief`，向用户展示完整确认摘要并得到明确确认后，再把 `confirm_hash` 传给 `create`。未写 `spec_version` 的新任务冻结为 v2；显式 v1 与已保存的 v1 批次保持原语义。确认摘要会写明当前取证限制：新 v2 批次冻结 `shared-page-budget-1` 只用于共享目录页面记账，目录自动采集和 JS 渲染仍不可用；没有该合同的批次拒绝自动共享目录采集。国家证据仍为字面匹配，结构化发现源未覆盖东南亚。摘要里的数量和时限是预算口径，不是完成承诺。
+
+schema 当前为 `skill_v2_004`（在 `skill_v2_003` 上追加 `skill_page_reservations`）。`prepare` 会把 003 升到 004。不要对这条迁移执行降级：2.7.0 不能读取 004。回滚是把升级前的数据库和工件备份恢复到一套新的库和目录，再把 `SCA_DATABASE_URL` 与 `SCA_ARTIFACT_ROOT` 一起切过去。详见 [共享页面预算实施记录](IMPLEMENTATION-shared-page-budget-v1.md)。
 
 seconds 上限在企业任务之间检查；正在执行的有限任务可能跨过该时间。任务异常最多重试三次，等待退避后再 process，或对终态失败执行 status --action retry。
 

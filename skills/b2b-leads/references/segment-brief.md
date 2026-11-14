@@ -12,7 +12,7 @@
 
 `brief` 只读输入文件和进程内的能力/规则，完全离线：不连接数据库，不执行 `prepare` 或维护，不发起 HTTP/DNS，不创建 run，不启动计时。成功时返回规范化 spec、`spec_hash`、`confirmation_summary`、`confirm_hash`、`defaults_applied`、`validation` 和 `pending_hints`。校验失败使用原有错误契约（字段路径、错误码、限额），不给出可用于创建的确认哈希。
 
-`capabilities.segment_brief_version` 为 `segment-brief-1`。`default_spec_version` 为 2。
+`capabilities.segment_brief_version` 为 `segment-brief-2`。`default_spec_version` 为 2。确认范围包含 `page_budget_contract`：新 v2 批次冻结 `shared-page-budget-1`，显式 v1 不冻结。旧的 `segment-brief-1` 哈希不能继续创建。
 
 ## 确认状态
 
@@ -53,7 +53,7 @@
 确认摘要和 `capabilities.discovery_limitations` 必须同时说明，且都还是当前事实：
 
 - 无自动 JS 渲染（`automatic_js_rendering=unavailable`）
-- 无共享目录统一页面预算（`shared_directory_page_budget=unavailable`），因此禁止自动目录采集
+- 共享目录页面预算合同 `shared-page-budget-1` 只对冻结了它的新 v2 批次记账。预算可用不等于目录自动采集可用（`automatic_shared_directory_collection=unavailable`），也不等于自动 JS 渲染可用。没有该合同的批次拒绝自动共享目录采集
 - 国家证据仍是旧版字面匹配（`country_evidence=legacy_literal_matching`）
 - 结构化发现源未覆盖东南亚（`structured_discovery_southeast_asia=not_covered`）；三源不可用时走 `legacy-search`
 
