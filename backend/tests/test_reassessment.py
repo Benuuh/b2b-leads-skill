@@ -12,7 +12,7 @@ from app.persistence import artifact_path, transaction, utcnow
 from app.persistence.models import Audit, Company, Job, Operation, Run, Snapshot
 
 
-SPEC = {'name': 'Saved forwarders', 'industry': 'freight forwarding',
+SPEC = {'spec_version': 1, 'name': 'Saved forwarders', 'industry': 'freight forwarding',
         'keywords': ['freight forwarding'], 'countries': ['US'], 'quantity': 50}
 SITE = 'https://saved-forwarder.example.com/'
 

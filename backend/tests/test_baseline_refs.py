@@ -14,7 +14,7 @@ from app.persistence.models import Company, Snapshot
 
 def test_capture_and_replay_ref_integrity(clean_db):
     rid = 'baseline-ref-test'
-    runs.create(rid, {'name': 'fixture', 'countries': ['US'], 'industry': 'freight'})
+    runs.create(rid, {'spec_version': 1, 'name': 'fixture', 'countries': ['US'], 'industry': 'freight'})
     key, checksum = persistence.put(b'synthetic source text', 'html')
     now = persistence.utcnow()
     with persistence.transaction() as session:

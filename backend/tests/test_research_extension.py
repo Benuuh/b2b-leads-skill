@@ -9,7 +9,7 @@ from app.persistence import transaction, utcnow
 from app.persistence.models import Audit, Operation, Run
 
 
-SPEC = {'name':'Research extension', 'industry':'freight forwarding', 'countries':['US'], 'quantity':200}
+SPEC = {'spec_version': 1, 'name':'Research extension', 'industry':'freight forwarding', 'countries':['US'], 'quantity':200}
 
 
 def test_extension_is_idempotent_and_preserves_scope_and_clock(clean_db):

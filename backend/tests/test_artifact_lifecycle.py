@@ -11,7 +11,7 @@ from app.persistence.models import Company, Export, PendingArtifactDelete, Snaps
 
 
 def seed_files():
-    runs.create('file-lifecycle', {'name': 'Lifecycle fixture', 'countries': ['US'], 'industry': 'freight'})
+    runs.create('file-lifecycle', {'spec_version': 1, 'name': 'Lifecycle fixture', 'countries': ['US'], 'industry': 'freight'})
     key, checksum = persistence.put(b'fixture workbook', 'xlsx')
     report, report_hash = persistence.put(b'{"fixture":true}', 'json')
     raw, raw_hash = persistence.put(b'fixture original page', 'html')

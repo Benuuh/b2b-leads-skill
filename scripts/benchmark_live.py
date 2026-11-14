@@ -105,7 +105,9 @@ def main():
 
     total = args.batches * args.per_batch
     at = datetime.now(timezone.utc).isoformat()
-    runs.create('bench-live', spec(total))
+    from app.segment_brief import inspect_segment
+    live_spec = spec(total)
+    runs.create('bench-live', live_spec, confirm_hash=inspect_segment(live_spec)['confirm_hash'])
     from app.persistence import transaction
     from app.persistence.models import Run
     with transaction() as session:

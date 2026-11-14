@@ -15,7 +15,8 @@ from app.schemas import parse_segment
 
 def test_capabilities_are_versioned_offline_and_bounded():
     result = capabilities()
-    assert result['spec_versions'] == [1, 2] and result['default_spec_version'] == 1
+    assert result['spec_versions'] == [1, 2] and result['default_spec_version'] == 2
+    assert result['segment_brief_version'] == 'segment-brief-1'
     assert {'entity.country_code', 'entity.headquarters_country', 'entity.registered_country',
             'entity.relationship', 'business.models', 'offering.products', 'offering.services',
             'customer.industries'} <= set(result['fields'])
@@ -39,11 +40,20 @@ def test_v2_configuration_is_normalized_and_self_describing(packaging_spec):
 
 
 def test_v1_payload_keeps_its_historical_shape():
-    payload = {'name': 'v1', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
+    payload = {'spec_version': 1, 'name': 'v1', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
     spec, version = parse_segment(payload)
     assert version == 1
     assert 'spec_version' not in spec and 'qualification_policy' not in spec
     assert spec['freshness_days'] == 180
+
+
+def test_unversioned_payload_normalizes_as_v2():
+    payload = {'name': 'v2-default', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
+    spec, version = parse_segment(payload)
+    assert version == 2 and spec['spec_version'] == 2
+    assert spec['qualification_policy']['derived_from'] == 'v1_fields'
+    assert spec['evidence_policy']['evidence_version'] == 'evidence-2'
+    assert 'qualification_policy' not in parse_segment({**payload, 'spec_version': 1})[0]
 
 
 def test_unsupported_version_field_and_operator_are_rejected(packaging_spec):

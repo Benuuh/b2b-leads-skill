@@ -248,9 +248,14 @@ def draft(payload: dict, customer_spec: dict, candidate_ids: list[str], *, as_of
     from app.runs import validate_input
     from app.schemas import parse_segment
     from app.rules.evidence import website_identity
+    from app.segment_brief import frozen_v1_document
 
     if not candidate_ids or len(candidate_ids) > 20 or len(set(candidate_ids)) != len(candidate_ids):
         raise ValueError('candidate_ids must contain 1 to 20 distinct IDs')
+    # A stored v1 spec omits spec_version. parse_segment now treats that
+    # absence as a new v2 task, which must not promote a historical batch.
+    if frozen_v1_document(customer_spec):
+        raise ValueError('prototype supports only evidence-2 runs')
     timestamp = datetime.fromisoformat(as_of.replace('Z', '+00:00'))
     if timestamp.utcoffset() is None:
         raise ValueError('as_of must include a timezone')

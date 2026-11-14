@@ -38,6 +38,32 @@ def pg_database(tmp_path_factory):
             connection.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
 
 
+@pytest.fixture(autouse=True)
+def _supply_confirm_hash(monkeypatch, request):
+    """Pass a real confirmation hash into ``runs.create`` unless a test opts out.
+
+    The core still checks the hash. Tests marked ``no_auto_confirm`` call the
+    unwrapped function and must supply or omit the hash themselves.
+    """
+    if request.node.get_closest_marker('no_auto_confirm'):
+        yield
+        return
+    import importlib
+    module = importlib.import_module('app.runs.create')
+    original = module.create
+
+    def wrapped(run_id, spec, confirm_hash=None, **kwargs):
+        if confirm_hash is None:
+            from app.segment_brief import inspect_segment
+            confirm_hash = inspect_segment(spec)['confirm_hash']
+        return original(run_id, spec, confirm_hash=confirm_hash, **kwargs)
+
+    monkeypatch.setattr(module, 'create', wrapped)
+    import app.runs as runs_pkg
+    monkeypatch.setattr(runs_pkg, 'create', wrapped)
+    yield
+
+
 @pytest.fixture
 def clean_db(pg_database):
     from app.persistence import transaction

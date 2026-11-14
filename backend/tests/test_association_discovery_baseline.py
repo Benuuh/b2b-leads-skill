@@ -40,4 +40,5 @@ def test_unimplemented_discovery_features_are_disclosed_offline():
         'automatic_js_rendering': 'unavailable',
         'country_rule_version_dispatch': 'unavailable',
         'country_evidence': 'legacy_literal_matching',
+        'structured_discovery_southeast_asia': 'not_covered',
     }

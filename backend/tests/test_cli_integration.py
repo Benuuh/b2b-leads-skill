@@ -33,8 +33,11 @@ def test_direct_commands_resume_and_export_chinese_excel(clean_db, tmp_path):
             {"field": "phone", "value": "+12135550123", "source_url": url,
              "source_type": "directory", "source_excerpt": "Business phone +1 213 555 0123", "retrieved_at": now}]}
     assert command("prepare")["api_required"] is False
-    spec = save("spec.json", {"name": "CLI fixture", "industry": "freight forwarding", "countries": ["US"], "quantity": 200})
-    assert command("create", "--run", "cli-fixture", "--spec-json", spec)["status"] == "running"
+    from app.segment_brief import inspect_segment
+    spec_body = {"spec_version": 1, "name": "CLI fixture", "industry": "freight forwarding", "countries": ["US"], "quantity": 200}
+    spec = save("spec.json", spec_body)
+    assert command("create", "--run", "cli-fixture", "--spec-json", spec,
+                   "--confirm-hash", inspect_segment(spec_body)["confirm_hash"])["status"] == "running"
     body = save("chunk.json", {"candidates": [candidate], "checkpoint": {"page": 1}})
     first = command("append", "--run", "cli-fixture", "--chunk", "round1", "--input-json", body)
     assert command("append", "--run", "cli-fixture", "--chunk", "round1", "--input-json", body) == first
@@ -75,9 +78,11 @@ def test_advance_command_keeps_chunk_and_processing_replay(
         return json.loads(result.stdout)
     spec = tmp_path / 'spec.json'
     chunk = tmp_path / 'chunk.json'
+    from app.segment_brief import inspect_segment
     spec.write_text(json.dumps(packaging_spec), encoding='utf-8')
     chunk.write_text(json.dumps({'candidates': [packaging_candidate]}), encoding='utf-8')
-    command('create', '--run', 'cli-advance', '--spec-json', str(spec))
+    command('create', '--run', 'cli-advance', '--spec-json', str(spec),
+            '--confirm-hash', inspect_segment(packaging_spec)['confirm_hash'])
     first = command('advance', '--run', 'cli-advance', '--chunk', 'first', '--input-json', str(chunk))
     assert first['advanced'] and first['summary']['contactable'] == 1
     assert first['admission']['accepted'] == first['processed_jobs'] == 1

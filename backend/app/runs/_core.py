@@ -332,6 +332,13 @@ def _view(session, run, context=None, research=None):
     summary.update(contactable=research['contactable_count'], target_quantity=research['target_quantity'],
                    target_shortfall=research['shortfall'])
     version = spec_version(run.spec_json)
+    stored_brief = (run.plan_json or {}).get('segment_brief')
+    if isinstance(stored_brief, dict) and stored_brief.get('confirm_hash'):
+        segment_brief = deepcopy(stored_brief)
+    else:
+        segment_brief = {'recorded': False, 'message': '历史批次，无确认记录'}
+    initial = (run.plan_json or {}).get('initial_limits') or {}
+    current_limit = research.get('time_limit_seconds')
     result = dict(id=run.id, run_id=run.id, batch_id=run.id, name=run.spec_json['name'],
         status=run.status, version=run.version, segment=deepcopy(run.spec_json), spec=deepcopy(run.spec_json),
         plan=deepcopy(run.plan_json), research=research, checkpoint=research['checkpoint'],
@@ -340,6 +347,12 @@ def _view(session, run, context=None, research=None):
         requires_more_processing=bool(research['queued'] or research['running']),
         external_tool_usage=deepcopy(research['external_tool_usage']),
         spec_version=version,
+        segment_brief=segment_brief,
+        time_limits={
+            'initial_seconds': initial.get('time_limit_seconds', current_limit),
+            'current_seconds': current_limit,
+            'initial_recorded': 'time_limit_seconds' in initial,
+        },
         created_at=_iso(run.created_at), updated_at=_iso(run.updated_at), finished_at=_iso(run.finished_at))
     if version == 2:
         from app.rules.policy import policy_summary
