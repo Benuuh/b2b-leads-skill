@@ -17,9 +17,12 @@ RULE_VERSION = 'b2b-policy-2'
 # Confirmation scope version. Bump it when a new field, rule, or fixed plan
 # default changes the summary a user has to confirm. The hash is not an audit
 # of who confirmed.
-SEGMENT_BRIEF_VERSION = 'segment-brief-1'
+SEGMENT_BRIEF_VERSION = 'segment-brief-2'
 EVIDENCE_LIMITS = {
-    'shared_directory_page_budget': 'unavailable',
+    # The ledger contract is available for new v2 runs. It is not a collector
+    # and it is not a JavaScript renderer.
+    'shared_directory_page_budget': 'shared-page-budget-1',
+    'automatic_shared_directory_collection': 'unavailable',
     'automatic_js_rendering': 'unavailable',
     'country_rule_version_dispatch': 'unavailable',
     'country_evidence': 'legacy_literal_matching',

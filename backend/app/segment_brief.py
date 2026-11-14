@@ -31,7 +31,7 @@ V1_RULE_VERSION = 'v1-historical'
 # promise that a run will finish a quantity or a clock time.
 EVIDENCE_LIMIT_MESSAGES = (
     '无自动 JS 渲染（automatic_js_rendering=unavailable）。抓取失败不作为负面资格证据，也不能绕过访问控制。',
-    '无共享目录统一页面预算（shared_directory_page_budget=unavailable）。该能力未验收前禁止自动目录采集；外部工具计数不能代替核心预算。',
+    '共享目录页面预算合同 shared-page-budget-1 只冻结在新的 v2 批次上，用来统一记账。预算可用不等于目录自动采集可用，也不等于自动 JS 渲染可用。没有该合同的批次拒绝自动共享目录采集；外部工具计数不能代替核心预算。',
     '国家证据仍是旧版字面匹配（ISO 两位码及 pycountry 名称），没有完整别名和结构化地址语义。未命中不等于已经判定不符合。',
     '结构化发现源未覆盖东南亚（structured_discovery_southeast_asia=not_covered）。三源不可用时走 legacy-search，不得把遗留搜索冒充已覆盖。',
 )
@@ -114,6 +114,7 @@ LABELS = {
     'fixed_plan.candidate_limit': '候选上限',
     'fixed_plan.page_limit_per_company': '批次单企业页上限',
     'fixed_plan.page_limit_total': '批次页面上限',
+    'fixed_plan.page_budget_contract': '共享目录页面预算合同',
     'fixed_plan.paid_sources': '付费来源',
     'fixed_plan.budget': '付费金额预算',
     'fixed_plan.execution_mode': '执行模式',
@@ -124,7 +125,7 @@ for _key in CONDITION_KEYS:
     LABELS[f'qualification_policy.exclude_any[].{_key}'] = f'排除条件.{_key}'
 
 
-def fixed_plan_values(spec):
+def fixed_plan_values(spec, version=1):
     """Plan defaults create actually freezes. Not remembered by the caller."""
     quantity = int(spec['quantity'])
     multiplier = int(LIMITS['candidate_multiplier'])
@@ -138,6 +139,8 @@ def fixed_plan_values(spec):
         'budget': spec['budget'],
         'execution_mode': 'skill_research',
         'completion_goal': 'contactable',
+        # v1 stays on the historical company counter and cannot open the ledger.
+        'page_budget_contract': 'shared-page-budget-1' if version == 2 else None,
     }
 
 
@@ -156,7 +159,7 @@ def confirm_material(spec, version, spec_hash):
         'brief_version': BRIEF_VERSION,
         'spec_hash': spec_hash,
         'rule_version': rule_version_for(version),
-        'fixed_plan': fixed_plan_values(spec),
+        'fixed_plan': fixed_plan_values(spec, version),
     }
     if version == 2:
         material['evidence_version'] = spec['evidence_policy']['evidence_version']
@@ -166,7 +169,7 @@ def confirm_material(spec, version, spec_hash):
 
 def build_run_plan(spec, version, *, spec_hash, confirm_hash, recorded_at, release):
     """Initial plan written by create. Fixed numbers come from ``fixed_plan_values``."""
-    fixed = fixed_plan_values(spec)
+    fixed = fixed_plan_values(spec, version)
     plan = {
         'execution_mode': fixed['execution_mode'],
         'completion_goal': fixed['completion_goal'],
@@ -195,6 +198,7 @@ def build_run_plan(spec, version, *, spec_hash, confirm_hash, recorded_at, relea
             'page_limit_per_company': fixed['page_limit_per_company'],
             'page_limit_total': fixed['page_limit_total'],
         },
+        'page_budget_contract': fixed['page_budget_contract'],
         'segment_brief': {
             'brief_version': BRIEF_VERSION,
             'spec_hash': spec_hash,
@@ -218,7 +222,7 @@ def historical_plan_matches(stored_plan, spec, version):
     """
     if not isinstance(stored_plan, dict):
         return False
-    fixed = fixed_plan_values(spec)
+    fixed = fixed_plan_values(spec, version)
     if stored_plan.get('spec_version') != version:
         return False
     if stored_plan.get('page_limit_per_company') != fixed['page_limit_per_company']:
@@ -335,14 +339,13 @@ def _provided_paths(payload, version):
 
 
 def _defaults_applied(spec, version, provided):
-    del version  # paths already follow the normalized spec; v1 has no spec_version key.
     rows = []
     for path in _walk_paths(spec):
         if '[]' in path or path in provided:
             continue
         rows.append({'path': path, 'value': _redact_value(path, _lookup(spec, path)),
                      'source': '默认值'})
-    for key, value in fixed_plan_values(spec).items():
+    for key, value in fixed_plan_values(spec, version).items():
         rows.append({'path': 'fixed_plan.' + key, 'value': value, 'source': '固定计划默认值'})
     rows.sort(key=lambda item: item['path'])
     return rows
@@ -519,6 +522,12 @@ def _fixed_display(key, value, spec, version):
         return f'{value}。这是创建时冻结并在派发时生效的单企业页上限。'
     if key == 'page_limit_total':
         return str(value)
+    if key == 'page_budget_contract':
+        if not value:
+            return '不冻结。自动共享目录采集拒绝。JS 渲染不可用。'
+        return (str(value) + '。只表示共享目录页面可以按页记账；'
+                '不等于目录自动采集可用，也不等于自动 JS 渲染可用。'
+                '没有该合同的批次拒绝自动共享目录采集。')
     if key == 'paid_sources':
         return '不使用付费来源' if value is False else str(value)
     if key == 'budget':
@@ -585,6 +594,7 @@ def _sections(spec, version, material, fields, spec_hash, confirm_hash):
         line('fixed_plan.candidate_limit'),
         line('fixed_plan.page_limit_per_company'),
         line('fixed_plan.page_limit_total'),
+        line('fixed_plan.page_budget_contract'),
         line('fixed_plan.paid_sources'),
         line('fixed_plan.budget'),
         NON_PROMISE,

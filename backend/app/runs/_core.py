@@ -359,6 +359,9 @@ def _view(session, run, context=None, research=None):
         result['policy'] = policy_summary(run.spec_json)
         result['evidence_policy'] = deepcopy(run.spec_json.get('evidence_policy'))
         result['execution_policy'] = deepcopy(run.spec_json.get('execution_policy'))
+    if (run.plan_json or {}).get('page_budget_contract') == 'shared-page-budget-1':
+        from app.page_budget import summarize
+        result['page_budget'] = summarize(session, run)
     return result
 
 

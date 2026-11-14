@@ -16,7 +16,7 @@ from app.schemas import parse_segment
 def test_capabilities_are_versioned_offline_and_bounded():
     result = capabilities()
     assert result['spec_versions'] == [1, 2] and result['default_spec_version'] == 2
-    assert result['segment_brief_version'] == 'segment-brief-1'
+    assert result['segment_brief_version'] == 'segment-brief-2'
     assert {'entity.country_code', 'entity.headquarters_country', 'entity.registered_country',
             'entity.relationship', 'business.models', 'offering.products', 'offering.services',
             'customer.industries'} <= set(result['fields'])

@@ -170,6 +170,37 @@ class ProspectSourceCandidate(Record, Base):
     raw_json: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
+class PageReservation(Record, Base):
+    """One shared-directory page attempt under ``shared-page-budget-1``.
+
+    Company crawl reservations stay on the job. This ledger is only the
+    directory side of the same run totals. A list page is one unit no matter
+    how many subjects it names. ``(run_id, operation_key, attempt)`` is unique
+    so a replay cannot charge twice.
+    """
+    __tablename__ = 'skill_page_reservations'
+    run_id: Mapped[str] = mapped_column(ForeignKey('skill_runs.id', ondelete='CASCADE'), index=True)
+    operation_key: Mapped[str] = mapped_column(String(160))
+    attempt: Mapped[int] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String(40))
+    page_type: Mapped[str] = mapped_column(String(20))
+    url: Mapped[str] = mapped_column(Text)
+    company_key: Mapped[str | None] = mapped_column(String(80))
+    subjects_json: Mapped[list] = mapped_column(JSONB, default=list)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    pages_reserved: Mapped[int] = mapped_column(Integer)
+    pages_consumed: Mapped[int | None] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(20))
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    cache_of: Mapped[str | None] = mapped_column(String(80))
+    send_state: Mapped[str | None] = mapped_column(String(20))
+    physical_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str | None] = mapped_column(String(40))
+    observation_ref: Mapped[str | None] = mapped_column(String(80))
+    settled_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint('run_id', 'operation_key', 'attempt'),)
+
+
 class ProspectSourceEnvelope(Record, Base):
     """原始记录信封：审计时还原"当时源里给的是什么"，平时不读。"""
     __tablename__ = 'prospect_source_envelopes'
