@@ -32,7 +32,7 @@ def test_artifact_atomic_bytes_and_path_fence(clean_db):
 
 def test_observations_independent_transactions(clean_db):
     from app import runs
-    runs.create('observed', {'name': 'Observed', 'countries': ['US'], 'industry': 'freight'})
+    runs.create('observed', {'spec_version': 1, 'name': 'Observed', 'countries': ['US'], 'industry': 'freight'})
     now = persistence.utcnow()
     persistence.observation_sink('start', {'id': 'http1', 'run_id': 'observed', 'kind': 'http', 'started_at': now})
     persistence.observation_sink('finish', {'id': 'http1', 'state': 'completed', 'finished_at': now, 'elapsed_seconds': 0.1})

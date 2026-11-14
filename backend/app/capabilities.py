@@ -14,6 +14,17 @@ SPEC_VERSIONS = (1, 2)
 EVIDENCE_VERSIONS = ('evidence-1', 'evidence-2')
 DEFAULT_EVIDENCE_VERSION = 'evidence-2'
 RULE_VERSION = 'b2b-policy-2'
+# Confirmation scope version. Bump it when a new field, rule, or fixed plan
+# default changes the summary a user has to confirm. The hash is not an audit
+# of who confirmed.
+SEGMENT_BRIEF_VERSION = 'segment-brief-1'
+EVIDENCE_LIMITS = {
+    'shared_directory_page_budget': 'unavailable',
+    'automatic_js_rendering': 'unavailable',
+    'country_rule_version_dispatch': 'unavailable',
+    'country_evidence': 'legacy_literal_matching',
+    'structured_discovery_southeast_asia': 'not_covered',
+}
 METRICS_VERSION = 'b2b-research-metrics-1'
 CHANNEL_POLICY_VERSION = 'b2b-channel-policy-1'
 IDENTITY_VERSION = 'b2b-identity-2'
@@ -262,18 +273,29 @@ def capabilities():
         'secrets': secrets_status(),
         # The association-discovery proposal is not yet a released collector.
         # Keep these limitations visible in the same offline envelope used
-        # before starting a research run.
-        'discovery_limitations': {
-            'shared_directory_page_budget': 'unavailable',
-            'automatic_js_rendering': 'unavailable',
-            'country_rule_version_dispatch': 'unavailable',
-            'country_evidence': 'legacy_literal_matching',
-        },
+        # before starting a research run. Slice A discloses them; it does not
+        # implement shared-directory budgets, JS rendering, new country rules,
+        # or Southeast Asia sources.
+        'discovery_limitations': dict(EVIDENCE_LIMITS),
         'identity_version': IDENTITY_VERSION,
         'channel_policy_version': CHANNEL_POLICY_VERSION,
         'metrics_version': METRICS_VERSION,
         'spec_versions': list(SPEC_VERSIONS),
-        'default_spec_version': 1,
+        'default_spec_version': 2,
+        'segment_brief_version': SEGMENT_BRIEF_VERSION,
+        'segment_brief': {
+            'version': SEGMENT_BRIEF_VERSION,
+            'offline': True,
+            'confirm_scope': [
+                'brief_version', 'spec_hash', 'rule_version', 'fixed_plan',
+                'evidence_version', 'execution_policy',
+            ],
+            'excluded_from_hash': [
+                'run_id', 'source_labels', 'prose', 'current_time',
+                'global_suppression_list', 'confirmation_recorded_at',
+            ],
+            'trust': '哈希只校验提交配置与当前生效配置一致，不是身份审计，也不能证明确认人、原话或确认时间。',
+        },
         'evidence_versions': list(EVIDENCE_VERSIONS),
         'default_evidence_version': DEFAULT_EVIDENCE_VERSION,
         'fast_path': {'command': 'advance', 'atomic_admission': True,

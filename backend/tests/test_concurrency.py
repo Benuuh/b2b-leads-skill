@@ -63,7 +63,7 @@ def test_two_workers_process_bounded_jobs(clean_db, packaging_spec, packaging_ca
 
 
 def test_v1_runs_keep_the_serial_contract(clean_db):
-    runs.create('serial', {'name': 'v1', 'industry': 'freight forwarding',
+    runs.create('serial', {'spec_version': 1, 'name': 'v1', 'industry': 'freight forwarding',
                            'countries': ['US'], 'quantity': 50})
     with pytest.raises(AppError) as exc:
         runs.process('serial', workers=2)

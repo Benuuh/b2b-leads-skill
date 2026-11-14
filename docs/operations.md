@@ -12,7 +12,8 @@ Windows 本地部署可将 PostgreSQL 二进制放在 `.runtime/pgsql/bin`、数
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/b2b_leads.py prepare
-.\.venv\Scripts\python.exe scripts/b2b_leads.py create --run us-forwarders-01 --spec-json .runtime/spec.json
+.\.venv\Scripts\python.exe scripts/b2b_leads.py brief --spec-json .runtime/spec.json
+.\.venv\Scripts\python.exe scripts/b2b_leads.py create --run us-forwarders-01 --spec-json .runtime/spec.json --confirm-hash <confirm_hash>
 .\.venv\Scripts\python.exe scripts/b2b_leads.py append --run us-forwarders-01 --chunk round-01 --input-json .runtime/round-01.json
 .\.venv\Scripts\python.exe scripts/b2b_leads.py process --run us-forwarders-01 --max-jobs 20 --max-seconds 60 --operation-key process-round-01
 .\.venv\Scripts\python.exe scripts/b2b_leads.py status --run us-forwarders-01 --action pause
@@ -21,7 +22,9 @@ Windows 本地部署可将 PostgreSQL 二进制放在 `.runtime/pgsql/bin`、数
 .\.venv\Scripts\python.exe scripts/b2b_leads.py export --run us-forwarders-01
 ```
 
-输入形状和证据要求见 [Skill 控制参考](../skills/b2b-leads/references/controller.md)。seconds 上限在企业任务之间检查；正在执行的有限任务可能跨过该时间。任务异常最多重试三次，等待退避后再 process，或对终态失败执行 status --action retry。
+输入形状和证据要求见 [Skill 控制参考](../skills/b2b-leads/references/controller.md)。新建批次先运行离线 `brief`，向用户展示完整确认摘要并得到明确确认后，再把 `confirm_hash` 传给 `create`。未写 `spec_version` 的新任务冻结为 v2；显式 v1 与已保存的 v1 批次保持原语义。确认摘要会写明当前取证限制：无自动 JS 渲染、无共享目录统一预算、国家证据仍为字面匹配、结构化发现源未覆盖东南亚。摘要里的数量和时限是预算口径，不是完成承诺。
+
+seconds 上限在企业任务之间检查；正在执行的有限任务可能跨过该时间。任务异常最多重试三次，等待退避后再 process，或对终态失败执行 status --action retry。
 
 ## 管理命令
 

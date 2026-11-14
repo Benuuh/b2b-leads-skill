@@ -263,7 +263,7 @@ def test_v1_runs_project_without_reinterpreting_their_policy(clean_db, monkeypat
                     qualification={'decision': 'qualified', 'confidence': .9, 'reasons': []},
                     demo_only=False, pipeline={'stop_reason': 'contact_target_reached'})
     monkeypatch.setattr(app.pipeline, 'process_company', record)
-    spec = {'name': '美国货代', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
+    spec = {'spec_version': 1, 'name': '美国货代', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
     candidate = {'company_name': 'Harbor Logistics LLC', 'country_code': 'US', 'industry_text': 'freight forwarding',
                  'website_url': 'https://harbor.example.org', 'source_url': 'https://directory.example.org/harbor',
                  'source_type': 'directory', 'source_excerpt': 'Harbor Logistics LLC provides freight forwarding',
