@@ -1,6 +1,14 @@
 # 安装与版本
 
-当前源码 Skill/核心 `2.7.0`，schema `skill_v2_004`。这不是 2.8.0 发布。`skill_v2_004` 只追加共享目录页面预算表；2.7.0 不能直接打开已升级的库，回滚要恢复升级前的独立备份。安装位置由使用者运行安装器时指定；此源码包不含本机安装记录、环境变量、数据库、业务资料或导出文件。
+当前源码 Skill/核心 `2.8.0`，schema `skill_v2_004`。这是内部试用构建，不是已完成生产验收，也不是正式发布的 2.8.0。RT-01 真实小批 canary、200 家 / 8 小时和独立校准均未验证。`skill_v2_004` 只追加共享目录页面预算表；2.7.0 不能直接打开已升级的库，回滚要恢复升级前的独立备份。安装位置由使用者运行安装器时指定；此源码包不含本机安装记录、环境变量、数据库、业务资料或导出文件。
+
+在目标机器上从本提交冻结安装，不要把这次源码版本号当成 GitHub Release：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/skill_release.py --root <本仓库检出> --destination <Skill 安装目录>
+```
+
+安装器把 `VERSION`、Skill 和核心打进 `.runtime/skill-releases/<release_id>`，不复制 `.env` 或业务数据。已安装入口是目标目录的 `scripts/control.py`。`capabilities` 在开发检出上 `installed=false`；装好后应看到 `skill_version` 与 `core_version` 均为 `2.8.0`，`installed=true`，且 `release_id` 等于该冻结目录。
 
 需要 Python 3.12 和 PostgreSQL 16，连接配置使用自己的本地环境。
 

@@ -1,13 +1,13 @@
 ---
 name: b2b-leads
 metadata:
-  version: "2.7.0"
-description: "Skill 2.7.0 · Research B2B target companies and their public business contact channels for any industry or country, continue saved acquisition batches, and deliver sourced Chinese Excel lead lists through the local Python acquisition core. Use for requests such as finding manufacturers, distributors, integrators or service providers, sourcing prospective business customers, or continuing a saved lead research run."
+  version: "2.8.0"
+description: "Skill 2.8.0 · Research B2B target companies and their public business contact channels for any industry or country, continue saved acquisition batches, and deliver sourced Chinese Excel lead lists through the local Python acquisition core. Use for requests such as finding manufacturers, distributors, integrators or service providers, sourcing prospective business customers, or continuing a saved lead research run. Internal trial build: not production acceptance and not an official released 2.8.0."
 ---
 
 # B2B customer research
 
-> 版本标记：Skill 2.7.0 · 核心 2.7.0 · 规则 b2b-policy-2。以 `capabilities` 返回的 `skill_version`/`core_version`/`rule_version` 和发布清单为准；`VERSION` 文件记录同一版本。
+> 版本标记：Skill 2.8.0 · 核心 2.8.0 · 规则 b2b-policy-2。以 `capabilities` 返回的 `skill_version`/`core_version`/`rule_version` 和发布清单为准；`VERSION` 文件记录同一版本。这是内部试用构建，不是已完成生产验收，也不是正式发布的 2.8.0。RT-01 真实小批 canary、200 家 / 8 小时和独立校准均未验证。
 
 ## 边界（每次启动先读）
 
@@ -58,7 +58,7 @@ Read [the controller reference](references/controller.md) for commands. Read [th
 - Pass that `confirm_hash` to `create --confirm-hash`. A missing or different hash returns `SEGMENT_NOT_CONFIRMED` and does not create a run. The hash only checks that the submitted config matches the summary. It is not an identity audit and does not prove who confirmed, what they wrote, or when. A direct core call can compute the hash; do not tell the user they confirmed unless you showed the summary and received an explicit reply afterward.
 - If the user requests exclusion of existing customers, locate the supplied file or ask for its location together with any other missing requirements. Put observed company/domain/email/phone identifiers into the spec's `exclusions` and record the file hash and count in the checkpoint without echoing customer details. A customer file is not an independent exclusion mechanism: identifiers that were not written into `exclusions` are not excluded, and the summary shows only the count and list hash. The backend also applies its current global suppression list, which can change during the run and is not frozen by the confirmation hash.
 - Create a new descriptive `--run` once per intentional new request and record it. Continue an existing request with exactly the same run; after an interrupted `create`, retry its original spec, run, and confirm hash. Do not infer continuation from two similar goals. Resume, supplement, reassess, append, advance, finish, export, live, and extend-research of an existing run do not need another confirmation. `extend-research` does not rewrite the original confirmation record. A run whose plan has no `segment_brief` is reported as 「历史批次，无确认记录」.
-- `create` freezes the normalized configuration, configuration hash, confirmation record, rule version and release, and starts the research clock. Inspect `status` before resuming saved work; never resume unrelated batches. The product version remains 2.7.0; this is not a 2.8.0 release. New v2 runs freeze `shared-page-budget-1`. Directory auto-collection, new country rules, JS rendering, and Southeast Asia sources are still unavailable.
+- `create` freezes the normalized configuration, configuration hash, confirmation record, rule version and release, and starts the research clock. Inspect `status` before resuming saved work; never resume unrelated batches. The version marker is internal trial 2.8.0, not completed production acceptance and not an official released 2.8.0. RT-01, a 200-company batch, an 8-hour service level, and independent calibration are unverified. New v2 runs freeze `shared-page-budget-1`. Directory auto-collection, new country rules, JS rendering, and Southeast Asia sources are still unavailable.
 
 ## Research, precheck and admit
 
