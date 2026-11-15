@@ -1,5 +1,5 @@
 {
- "app_root": "<repo>/D:/b2b-leads-skill/backend",
+ "app_root": "<repo>/backend",
  "scenario": "export",
  "repeats": 5,
  "cohorts": [
