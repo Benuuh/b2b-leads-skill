@@ -10,7 +10,7 @@ from app.errors import AppError
 from app.persistence import transaction
 from app.persistence.models import Job, Run
 
-SPEC = {'name': '美国货代', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
+SPEC = {'spec_version': 1, 'name': '美国货代', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
 
 
 def candidate(**extra):

@@ -10,11 +10,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.7.0-2ea44f" alt="Version 2.7.0">
+  <img src="https://img.shields.io/badge/version-2.8.0--internal--trial-yellow" alt="Version 2.8.0 internal trial">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <a href="https://github.com/Benuuh/b2b-leads-skill/actions/workflows/ci.yml"><img src="https://github.com/Benuuh/b2b-leads-skill/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/schema-skill__v2__003-6f42c1" alt="Schema skill_v2_003">
+  <img src="https://img.shields.io/badge/schema-skill__v2__004-6f42c1" alt="Schema skill_v2_004">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT License"></a>
 </p>
 
@@ -30,6 +30,8 @@
 ---
 
 **B2B Leads** 是一个本地运行的获客研究技能：Agent 负责搜索和打开公开页面，提交逐字段证据；Python 核心负责资格判断、有限官网补齐、联系方式校验、去重、抑制、预算、恢复和文件交付。
+
+当前检出的版本标记是内部试用 **2.8.0**，不是已完成生产验收，也不是正式发布的 2.8.0。RT-01 真实小批 canary、200 家 / 8 小时和独立校准均未验证。下面的 2.7.0 基准表是历史测量，不是本次试用的在线时效。
 
 它**不是**一个批量爬虫，也**不是**一个自动发信/写 CRM 的 SaaS。它只回答一个问题：**这家企业是否符合目标客群，并且是否有可复核的公开商务联系方式？**
 
@@ -73,8 +75,12 @@ New-Item -ItemType Directory -Force .runtime\b2b-leads | Out-Null
 }
 '@ | Set-Content .runtime\b2b-leads\spec.json -Encoding utf8
 
+# 未写 spec_version 的新任务会冻结为 v2。先看确认摘要，用户明确确认后再创建。
+.\.venv\Scripts\python.exe scripts/b2b_leads.py brief `
+  --spec-json .runtime\b2b-leads\spec.json
 .\.venv\Scripts\python.exe scripts/b2b_leads.py create `
-  --run us-freight-20261108 --spec-json .runtime\b2b-leads\spec.json
+  --run us-freight-20261108 --spec-json .runtime\b2b-leads\spec.json `
+  --confirm-hash <brief 返回的 confirm_hash>
 
 # Agent 提交带来源摘录的企业证据；首轮建议 5 家，之后每轮 10–20 家
 .\.venv\Scripts\python.exe scripts/b2b_leads.py advance `
@@ -117,7 +123,7 @@ flowchart LR
 一次研究被拆成四层：
 
 1. **Agent 层**：发现企业、打开公开页面、提交带摘录的证据。
-2. **协调层**：`create` 冻结客群与执行政策；`advance` 原子预检+追加+有界处理；`status` / `pause` / `resume` / `finish` 管理生命周期。
+2. **协调层**：离线 `brief` 展示生效口径，用户确认后 `create` 才冻结客群与执行政策；`advance` 原子预检+追加+有界处理；`status` / `pause` / `resume` / `finish` 管理生命周期。
 3. **单企业层**：先复用已保存证据；需要时最多两页确认资格，通过后继续补齐，单企业合计最多十页；满足渠道目标提前停止。
 4. **交付层**：统一做资格、渠道、去重、抑制和 freshness 过滤；导出四张表并写入可校验的 manifest。
 
@@ -126,7 +132,7 @@ flowchart LR
 | | |
 |---|---|
 | **证据合同** | 每个事实和渠道独立来源；摘自页面原文；拒绝搜索摘要；主体不一致不算。 |
-| **可配置客群** | `spec_version: 2` 把资格条件、渠道政策、freshness、页面预算和 worker 数冻结到 run。 |
+| **可配置客群** | 新任务默认 `spec_version: 2`，把资格条件、渠道政策、freshness、页面预算和 worker 数冻结到 run。创建前用离线 `brief` 展示生效口径并等待明确确认。 |
 | **渠道政策** | `any` / `all`、邮箱/电话/联系表单、具名联系人、角色要求分别判断。 |
 | **去重与 ownership** | 共享 domain / email / phone / form 在交付过滤前冻结归属，不能把渠道“转移”给另一家。 |
 | **抑制名单** | 全局 suppression + 客群 exclusions；被排除的联系方式不会从来源表泄漏。 |

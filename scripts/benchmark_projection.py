@@ -107,7 +107,8 @@ def _seed(runs, models, run_id, cohort, spec):
     """Seed a deterministic run and cohort; avoids 20 prechecks per repeat."""
     from app.persistence import transaction, utcnow
     from datetime import datetime, timedelta, timezone
-    runs.create(run_id, spec)
+    from app.segment_brief import inspect_segment
+    runs.create(run_id, spec, confirm_hash=inspect_segment(spec)['confirm_hash'])
     # Deterministic fixture time: old/new A/B must see byte-identical rows.
     now = datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc)
     with transaction() as session:

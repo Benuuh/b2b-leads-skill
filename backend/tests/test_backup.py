@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 
 def seed_export():
-    runs.create("backup-run", {"name": "Backup fixture", "countries": ["US"], "industry": "freight"})
+    runs.create("backup-run", {"spec_version": 1, "name": "Backup fixture", "countries": ["US"], "industry": "freight"})
     book = Workbook()
     book.active.title = 'Companies'
     book.active.append(['企业名称'])

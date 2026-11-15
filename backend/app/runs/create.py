@@ -6,43 +6,56 @@ from app.release import release_identity
 from app.persistence import (transaction, utcnow)
 from app.persistence.models import Run
 from app.schemas import parse_segment
-from ._core import (_hash, _audit, _view)
+from app.segment_brief import build_run_plan, historical_plan_matches, require_confirmation
+from ._core import (_hash, _iso, _audit, _view)
+
+_CONFLICT = '该 run 已用于不同客群或确认范围与已保存记录不一致；请使用 status 查看已冻结批次'
 
 
-def create(run_id, spec, **kwargs):
+def create(run_id, spec, confirm_hash=None, **kwargs):
+    """Create a run only when ``confirm_hash`` matches the current confirmation scope.
+
+    The check runs before the transaction. There is no bypass that writes a run
+    without a hash. A matching hash means the caller submitted the current
+    config; it does not record who confirmed. Historical runs without
+    ``segment_brief`` are returned only when the spec and the initial fixed
+    plan still match, and this function does not invent a confirmation record
+    for them.
+    """
+    del kwargs
     if not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', run_id):
         raise AppError('INVALID_RUN_ID', 'run 仅支持 1 至 80 位字母、数字、点、横线和下划线')
-    spec, version = parse_segment(spec)
+    prepared = require_confirmation(spec, confirm_hash)
+    spec, version = prepared['spec'], prepared['spec_version']
+    spec_hash, confirm = prepared['spec_hash'], prepared['confirm_hash']
     with transaction() as session:
         # Lock even before the row exists to serialize concurrent create calls.
         from sqlalchemy import text
         session.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))'), {'key': 'run:' + run_id})
         old = session.get(Run, run_id, with_for_update=True)
         if old:
-            if old.spec_hash != _hash(spec):
-                raise AppError('IDEMPOTENCY_CONFLICT', '该 run 已用于不同客群', 409)
-            return _view(session, old)
-        plan = {'execution_mode': 'skill_research', 'completion_goal': 'contactable',
-            'page_limit_per_company': 10, 'page_limit_total': 10000,
-            'request_observation_protocol': 'observed-2', 'lookup_observation_protocol': 'observed-2',
-            'timing_protocol': 'observed-1', 'release': release_identity(),
-            'spec_version': version,
-            'research': {'input_open': True, 'candidate_limit': spec['quantity'] * 3,
-            'time_limit_seconds': 28800, 'admitted_count': 0, 'checkpoint': {}, 'external_tool_usage': {},
-            'stop_reason': None}}
-        if version == 2:
-            from app.rules.policy import policy_summary
-            plan['rules_version'] = policy_summary(spec)['rule_version']
-            plan['evidence_version'] = (spec.get('evidence_policy') or {}).get('evidence_version')
-            plan['execution'] = {**(spec.get('execution_policy') or {}), 'circuit': {'open': False}}
-        run = Run(id=run_id, spec_json=spec, spec_hash=_hash(spec), demo_only=settings.fixture_mode,
+            if old.spec_hash != spec_hash:
+                raise AppError('IDEMPOTENCY_CONFLICT', _CONFLICT, 409)
+            recorded = (old.plan_json or {}).get('segment_brief') or {}
+            if recorded:
+                if recorded.get('confirm_hash') != confirm or recorded.get('spec_hash') != spec_hash \
+                        or recorded.get('brief_version') != prepared['confirmation_summary']['brief_version']:
+                    raise AppError('IDEMPOTENCY_CONFLICT', _CONFLICT, 409)
+                return _view(session, old)
+            if historical_plan_matches(old.plan_json, spec, version):
+                return _view(session, old)
+            raise AppError('IDEMPOTENCY_CONFLICT', _CONFLICT, 409)
+        plan = build_run_plan(spec, version, spec_hash=spec_hash, confirm_hash=confirm,
+                              recorded_at=_iso(utcnow()), release=release_identity())
+        run = Run(id=run_id, spec_json=spec, spec_hash=spec_hash, demo_only=settings.fixture_mode,
             active_started_at=utcnow(), plan_json=plan,
             stats_json={'pages': 0, 'duplicates': 0, 'active_seconds': 0, 'paused_seconds': 0})
         session.add(run)
         session.flush()
         _audit(session, run.id, 'run.created', spec_version=version,
-               spec_hash=run.spec_hash, rules_version=plan.get('rules_version'),
-               release=plan['release'])
+               spec_hash=run.spec_hash, confirm_hash=confirm,
+               brief_version=plan['segment_brief']['brief_version'],
+               rules_version=plan.get('rules_version'), release=plan['release'])
         return _view(session, run)
 
 

@@ -4,11 +4,13 @@
 
 ## 版本
 
-- **v1**：无 `spec_version` 的旧输入，字段与语义保持原样；存为 `spec_version: 1`。v1 run 只接受原有候选字段，不接受版本化事实字段。
-- **v2**：`spec_version: 2`，新增 `qualification_policy`、`evidence_policy`、`execution_policy`。新能力只由 v2 run 显式启用。
+- **新建默认 v2**：未写 `spec_version` 的新任务按 v2 校验并冻结为 `spec_version: 2`。`capabilities.default_spec_version` 为 2。
+- **显式 v1**：`spec_version: 1` 保持历史字段与语义；存下的 spec 不含 `spec_version` 字段，计划里的 `spec_version` 为 1。v1 run 只接受原有候选字段，不接受版本化事实字段。
+- **已有 v1 批次**：冻结文档没有 `spec_version` 时仍按 v1 读取。status、export、续跑、补证和重评不得改用 v2 条件重判。
+- **v2**：显式或默认的 `spec_version: 2`，包含 `qualification_policy`、`evidence_policy`、`execution_policy`。新能力只由 v2 run 启用。
 - 其他版本：`UNSUPPORTED_SPEC_VERSION`，不自动降级或剥离条件。
 
-`capabilities` 可离线查询支持的版本、字段、运算符、默认值与限额；不要凭记忆写条件。
+新建批次还要先跑离线 `brief` 并在用户明确确认后把 `confirm_hash` 交给 `create`。见 [segment-brief.md](segment-brief.md)。`capabilities` 可离线查询支持的版本、字段、运算符、默认值、确认范围与取证限制；不要凭记忆写条件。
 
 ## v2 结构
 

@@ -136,7 +136,7 @@ def _old_baseline():
 
 @pytest.mark.parametrize('entrypoint', ['prepare', 'alembic'])
 def test_additive_schema_upgrade_preserves_existing_batch(clean_db, entrypoint):
-    runs.create('retained-baseline', {'name': 'Existing batch', 'industry': 'freight', 'countries': ['US']})
+    runs.create('retained-baseline', {'spec_version': 1, 'name': 'Existing batch', 'industry': 'freight', 'countries': ['US']})
     _old_baseline()
     try:
         if entrypoint == 'prepare':

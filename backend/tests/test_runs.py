@@ -9,7 +9,7 @@ from app.persistence import transaction, utcnow
 from app.persistence.models import Run, Job, Company, Operation, Export, MaintenanceState, Observation
 
 
-SPEC = {'name': '美国货代', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
+SPEC = {'spec_version': 1, 'name': '美国货代', 'industry': 'freight forwarding', 'countries': ['US'], 'quantity': 50}
 
 
 def candidate(name='Acme', **extra):

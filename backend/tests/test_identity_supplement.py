@@ -160,7 +160,7 @@ def test_supplement_respects_closed_input_and_version(clean_db, packaging_spec, 
                         operation_key='late')
     assert exc.value.code == 'INPUT_CLOSED'
 
-    runs.create('v1-run', {'name': 'v1', 'industry': 'freight forwarding',
+    runs.create('v1-run', {'spec_version': 1, 'name': 'v1', 'industry': 'freight forwarding',
                            'countries': ['US'], 'quantity': 50})
     with pytest.raises(AppError) as exc:
         runs.supplement('v1-run', 'any',

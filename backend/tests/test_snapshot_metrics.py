@@ -98,7 +98,7 @@ def test_v1_run_does_not_emit_v2_snapshots(clean_db, packaging_candidate, monkey
                     pipeline={'stop_reason': 'contact_target_reached'})
 
     monkeypatch.setattr(app.pipeline, 'process_company', research)
-    runs.create('metrics-v1', {'name': 'v1', 'industry': 'freight forwarding',
+    runs.create('metrics-v1', {'spec_version': 1, 'name': 'v1', 'industry': 'freight forwarding',
                                'countries': ['US'], 'quantity': 50})
     with transaction() as session:
         session.get(Run, 'metrics-v1').demo_only = False

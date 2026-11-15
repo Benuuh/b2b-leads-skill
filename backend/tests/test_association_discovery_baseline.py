@@ -36,8 +36,10 @@ def test_policy_2_country_field_does_not_validate_role(packaging_spec, packaging
 def test_unimplemented_discovery_features_are_disclosed_offline():
     limits = capabilities()['discovery_limitations']
     assert limits == {
-        'shared_directory_page_budget': 'unavailable',
+        'shared_directory_page_budget': 'shared-page-budget-1',
+        'automatic_shared_directory_collection': 'unavailable',
         'automatic_js_rendering': 'unavailable',
         'country_rule_version_dispatch': 'unavailable',
         'country_evidence': 'legacy_literal_matching',
+        'structured_discovery_southeast_asia': 'not_covered',
     }

@@ -27,6 +27,8 @@ def parser():
     commands.add_parser("prepare")
     commands.add_parser("list", help="列出已保存批次")
     commands.add_parser("capabilities", help="离线读取支持的配置版本、字段、运算符与限额")
+    brief = commands.add_parser("brief", help="离线生成客群确认摘要；不写库、不联网、不创建 run")
+    brief.add_argument("--spec-json", required=True, type=Path)
     validate = commands.add_parser("validate-input", help="离线逐条预检候选，不写库、不联网")
     validate.add_argument("--spec-json", required=True, type=Path)
     validate.add_argument("--input-json", required=True, type=Path)
@@ -42,6 +44,9 @@ def parser():
         sub.add_argument("--run", required=True)
         if command == "create":
             sub.add_argument("--spec-json", required=True, type=Path)
+            # Optional at parse time so a missing hash is a JSON error with no
+            # database work, rather than an argparse usage dump.
+            sub.add_argument("--confirm-hash", help="brief 给出的确认范围哈希；缺失或不匹配则不创建")
         if command in {"append", "finish", "advance"}:
             sub.add_argument("--input-json", required=command == "append", type=Path)
         if command == "advance":
@@ -114,6 +119,9 @@ def dispatch(args):
     if args.command == "capabilities":
         from app.capabilities import capabilities
         return capabilities()
+    if args.command == "brief":
+        from app.segment_brief import inspect_segment
+        return inspect_segment(read_json(args.spec_json))
     if args.command == "validate-input":
         return runs.validate_input(read_json(args.spec_json), read_json(args.input_json))
     if args.command == "stage-draft":
@@ -126,7 +134,16 @@ def dispatch(args):
         return {'version': staged['version'], 'chunk_id': staged['chunk_id'],
                 'submittable': len(staged['submittable']['candidates']),
                 'errors': staged['errors'], 'out': str(args.out) if args.out else None}
-    # 密钥启动校验（spec 2.6 §3.5）：除 capabilities 与两个纯离线命令外，
+    # create 的确认哈希必须在准备、维护和数据库之前完成。无效输入同样不得启动这些副作用。
+    # 传入的是已经读入内存的原始 spec，避免校验通过后再读可能已变化的文件。
+    # 规范化后的 v1 文档不含 spec_version，不能把那份结果再送去解析。
+    prepared_create = None
+    raw_create_spec = None
+    if args.command == "create":
+        from app.segment_brief import require_confirmation
+        raw_create_spec = read_json(args.spec_json)
+        prepared_create = require_confirmation(raw_create_spec, args.confirm_hash)
+    # 密钥启动校验（spec 2.6 §3.5）：除 capabilities、brief 与两个纯离线命令外，
     # 任何命令在动数据库之前先确认密钥就绪；宁可起不来，不要跑一半崩。
     from app.secrets import validate_startup_secrets
     validate_startup_secrets()
@@ -176,7 +193,7 @@ def dispatch(args):
             return service.discover_all(args.run, limit=args.limit)
         return service.discover(args.run, args.source, limit=args.limit)
     if args.command == "create":
-        return runs.create(args.run, read_json(args.spec_json))
+        return runs.create(args.run, raw_create_spec, confirm_hash=prepared_create['confirm_hash'])
     if args.command == "append":
         body = ResearchInput.model_validate(read_json(args.input_json)).model_dump()
         return runs.append(args.run, chunk_id=args.chunk, **body)

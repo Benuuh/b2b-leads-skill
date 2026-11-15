@@ -303,12 +303,18 @@ def _normalize_policy(policy: dict) -> dict:
 def parse_segment(payload) -> tuple[dict, int]:
     """Return the frozen normalized configuration and its spec version.
 
-    An unversioned payload keeps the historical v1 normalization byte-for-byte,
-    so a retried ``create`` recomputes the same hash for existing runs.
+    A new payload with no ``spec_version`` is validated and frozen as v2.
+    Explicit ``spec_version: 1`` keeps the historical v1 document: the stored
+    spec has no version field, so ``spec_version()`` still reads old rows as
+    v1 and does not re-decide them with v2 conditions.
     """
     if not isinstance(payload, dict):
         raise ValueError("客群配置必须是 JSON 对象")
-    version = payload.get('spec_version', 1)
+    if 'spec_version' not in payload:
+        version = 2
+        payload = {**payload, 'spec_version': 2}
+    else:
+        version = payload.get('spec_version')
     if isinstance(version, bool) or version not in (1, 2):
         from app.errors import AppError
         raise AppError('UNSUPPORTED_SPEC_VERSION', '不支持的 spec_version；本核心仅接受 1 或 2',

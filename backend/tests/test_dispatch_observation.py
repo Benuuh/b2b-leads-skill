@@ -16,7 +16,7 @@ URL = 'https://public.example.com/contact'
 
 @pytest.fixture
 def transport(clean_db, monkeypatch):
-    runs.create(RUN_ID, {'name': 'Dispatch fixture', 'countries': ['US'], 'industry': 'freight'})
+    runs.create(RUN_ID, {'spec_version': 1, 'name': 'Dispatch fixture', 'countries': ['US'], 'industry': 'freight'})
     monkeypatch.setattr(http, '_blocked_until', {})
     monkeypatch.setattr(http, '_last_request', {})
     monkeypatch.setattr(http, 'validate_public_url', lambda url: (url, ['93.184.216.34']))

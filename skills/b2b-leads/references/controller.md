@@ -4,8 +4,9 @@ Use the checkout `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (oth
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/b2b_leads.py capabilities
+.\.venv\Scripts\python.exe scripts/b2b_leads.py brief --spec-json .runtime/b2b-leads/spec.json
 .\.venv\Scripts\python.exe scripts/b2b_leads.py prepare
-.\.venv\Scripts\python.exe scripts/b2b_leads.py create --run de-packaging-20261027 --spec-json .runtime/b2b-leads/spec.json
+.\.venv\Scripts\python.exe scripts/b2b_leads.py create --run de-packaging-20261027 --spec-json .runtime/b2b-leads/spec.json --confirm-hash <confirm_hash>
 .\.venv\Scripts\python.exe scripts/b2b_leads.py advance --run de-packaging-20261027 --chunk round-01 --input-json .runtime/b2b-leads/round-01.json --max-jobs 20 --max-seconds 60
 .\.venv\Scripts\python.exe scripts/b2b_leads.py validate-input --spec-json .runtime/b2b-leads/spec.json --input-json .runtime/b2b-leads/round-01.json
 .\.venv\Scripts\python.exe scripts/b2b_leads.py append --run de-packaging-20261027 --chunk round-01 --input-json .runtime/b2b-leads/round-01.json
@@ -31,19 +32,19 @@ Staged evidence (offline converter, added in 2.5.0; same precheck and admission 
 
 `stage-draft` validates observed evidence, converts only supported fields and returns the submittable count plus per-candidate error codes; `advance --artifact-json` does the same conversion in-process before submitting and defaults the chunk to the content hash. Neither overrides precheck, channel or delivery rules.
 
-`capabilities`, `validate-input` and `stage-draft` are offline: no database write, no HTTP/DNS and no implicit maintenance. Every other command prepares the core and invokes bounded database-backed maintenance. `prepare` connects to PostgreSQL, starts only the existing workspace Windows cluster if needed, creates the independent Skill database and validates its schema. There is no API, browser workbench, login or worker. `--url` has been removed. Existing legacy databases and runtime state are not upgraded or resumed; credentials are never printed.
+`capabilities`, `brief`, `validate-input` and `stage-draft` are offline: no database write, no HTTP/DNS and no implicit maintenance. `brief` returns the normalized spec, `spec_hash`, `confirmation_summary`, `confirm_hash`, `defaults_applied`, `validation` and `pending_hints`. It does not judge the market or promise a quantity or a finish time. Every other command prepares the core and invokes bounded database-backed maintenance. `create` checks `--confirm-hash` before that preparation; a missing or different hash is `SEGMENT_NOT_CONFIRMED` (409) and does not open the database. The hash shows that the submitted config matches the summary. It does not prove who confirmed. `prepare` connects to PostgreSQL, starts only the existing workspace Windows cluster if needed, creates the independent Skill database and validates its schema. There is no API, browser workbench, login or worker. `--url` has been removed. Existing legacy databases and runtime state are not upgraded or resumed; credentials are never printed.
 
 `live` is a foreground viewing command: it writes the committed-state projection under the artifact root and serves a short-lived page bound only to `127.0.0.1` with a per-process token, printing one JSON line with the URL. It never collects, changes a run, runs maintenance from the page or exports by itself; the page's export button calls the core with the current filters. It exits on inactivity or Ctrl+C, and only `--open` opens a browser. `--rebuild-only` refreshes the saved projection without serving. Do not treat the projection file, a page refresh or the lack of a background process as proof that the run is active.
 
 ## Customer spec
 
-`create` accepts a v1 or v2 configuration. v1 (no `spec_version`) keeps the historical fields and semantics:
+`create` accepts a v1 or v2 configuration and requires `--confirm-hash` from `brief` for that same spec. A new spec with no `spec_version` is validated and frozen as v2 (`capabilities.default_spec_version` is 2). Explicit v1 keeps the historical fields and semantics; the example below is v1 only because it sets `spec_version` to 1:
 
 ```json
-{"name":"美国货代公开商务联系方式","industry":"freight forwarding","countries":["US"],"quantity":200,"keywords":["freight forwarder"],"languages":["en"],"exclusions":[],"paid_sources":false,"budget":0}
+{"spec_version":1,"name":"美国货代公开商务联系方式","industry":"freight forwarding","countries":["US"],"quantity":200,"keywords":["freight forwarder"],"languages":["en"],"exclusions":[],"paid_sources":false,"budget":0}
 ```
 
-v2 adds `qualification_policy`, `evidence_policy` and `execution_policy`; see [segment-spec.md](segment-spec.md) for the complete contract, field/operator table and two non-freight examples. `create` freezes the normalized configuration, its hash, the rule version and the executing release. An unknown version (`UNSUPPORTED_SPEC_VERSION`), an unregistered field/operator (`UNSUPPORTED_CONDITION`) or two conflicting forms of one setting (`CONFLICTING_CONFIG`) is rejected rather than narrowed silently.
+v2 adds `qualification_policy`, `evidence_policy` and `execution_policy`; see [segment-spec.md](segment-spec.md) for the complete contract, field/operator table and two non-freight examples. See [segment-brief.md](segment-brief.md) for the confirmation flow. `create` freezes the normalized configuration, its hash, the confirmation record, the rule version and the executing release. An unknown version (`UNSUPPORTED_SPEC_VERSION`), an unregistered field/operator (`UNSUPPORTED_CONDITION`), two conflicting forms of one setting (`CONFLICTING_CONFIG`), or a missing/stale confirm hash (`SEGMENT_NOT_CONFIRMED`) is rejected rather than narrowed silently. Status, export, and resume read a stored v1 spec as v1. Replaying `create` with a different normalization conflicts and tells the caller to use `status`; it does not rewrite the frozen spec or invent a historical confirmation.
 
 The customer spec accepts quantities 50–1000; the candidate cap is three times the target, so the default target 200 permits 600 candidates. Read `research.candidate_limit` from the saved run. For a 10-company smoke test retain the real target (normally 200), then explicitly finish and report partial fulfillment. Do not lower the denominator or call this a full delivery.
 
