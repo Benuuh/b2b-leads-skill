@@ -833,8 +833,15 @@ def finish(run_id, checkpoint=None, external_tool_usage=None, max_jobs=20, max_s
             operation.result_json = {'run_id': run_id, 'finalized': True}
             _audit(session, run.id, 'run.finish')
     _live_refresh(run_id)
-    return process(run_id, max_jobs=max_jobs, max_seconds=max_seconds, resume=resume,
-                   operation_key=('finish:' + _hash(key)) if operation_key else None, workers=workers)
+    result = process(run_id, max_jobs=max_jobs, max_seconds=max_seconds, resume=resume,
+                     operation_key=('finish:' + _hash(key)) if operation_key else None, workers=workers)
+    # The cost report is a side artifact; a write failure must not lose the run.
+    try:
+        from .report import from_view, publish
+        result['run_report'] = publish(from_view(result))
+    except OSError:
+        result['run_report'] = {'error': 'REPORT_WRITE_FAILED'}
+    return result
 
 
 def reassess(run_id, company_ids, operation_key, expected_version=None):

@@ -21,6 +21,7 @@
   "industry": "industrial packaging",
   "countries": ["DE"],
   "quantity": 200,
+  "time_limit_hours": 12,
   "paid_sources": false,
   "budget": 0,
   "qualification_policy": {
@@ -52,9 +53,9 @@
 | `entity.relationship` | `independent` `subsidiary` `branch` `unknown` | `equals` `in` `not_in` |
 | `entity.region` | 文本 | `includes_any` |
 | `business.models` | `manufacturer` `distributor` `retailer` `reseller` `integrator` `service_provider` `trading_company` `logistics_provider` `oem` | `includes` `includes_any` |
-| `business.type` | 文本 | `includes` `includes_any` |
-| `offering.products` / `offering.services` | 文本 | `includes` `includes_any` `provides` |
-| `customer.industries` | 文本 | `includes` `includes_any` |
+| `business.type` | 文本 | `includes` `includes_any` `contains_any_phrase` |
+| `offering.products` / `offering.services` | 文本 | `includes` `includes_any` `provides` `contains_any_phrase` |
+| `customer.industries` | 文本 | `includes` `includes_any` `contains_any_phrase` |
 | `size.employees` / `size.revenue` | 区间文本，如 `50-200`、`2-5 million` | `within` |
 | `industry.match` | 发现词（仅在缺少显式政策时由 `industry`/`keywords` 派生） | `matches` |
 | `evidence.exclude_terms` | 排除词 | `contains_any` |
@@ -84,7 +85,9 @@
 
 - 未提供 `qualification_policy` 时，由 v1 字段派生等价政策：国家、企业类型、地区、规模、行业匹配、排除词；`derived_from` 记录为 `v1_fields`。
 - 顶层 `freshness_days` 与 `evidence_policy.freshness_days` 冲突时拒绝（`CONFLICTING_CONFIG`）；生效值同步到顶层供旧消费者读取。
-- 核心上限不可扩大：`quantity` 50–1000、候选为目标 3 倍、单企业 10 页、单批 10000 页、单次 `process` 20 个任务/300 秒、累计 8 小时、零付费。
+- 核心上限不可扩大：`quantity` 50–1000、候选为目标 3 倍、单企业 10 页、单批 10000 页、单次 `process` 20 个任务/300 秒、零付费。
+- 初始累计时限默认 8 小时；v2 可用 `time_limit_hours`（1–72）在 spec 里直接指定，`brief` 展示、`confirm_hash` 覆盖、`create` 冻结为 `initial_limits.time_limit_seconds`。事后仍可 `extend-research`。
+- `contains_any_phrase` 按词边界、不分大小写做短语包含（`patio` 命中 `patio furniture`，不命中 `patios` 或 `not patio`）；`includes`/`includes_any` 仍是整值精确比较。单泛词做精确匹配时 `brief` 会在 `pending_hints` 提示，但不阻塞创建。
 - `execution_policy` 只可在核心范围内收窄：`company_workers` 1–4、`native_inflight` 1–2、`freshness_days` 1–730。
 
 ## 第二例：阿联酋零售 IT 集成商

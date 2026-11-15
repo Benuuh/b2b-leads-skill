@@ -10,6 +10,9 @@ import pytest
 from app.rules.contacts import extract_company, validate_email, validate_phone
 from app.delivery.exporting import build_export
 from app.delivery.selection import filter_companies
+from app.capabilities import RULE_VERSION, capabilities
+from app.rules.policy import assess_policy, phrase_present, policy_summary
+from app.schemas import parse_segment
 
 NOW = "2026-10-20T01:00:00Z"
 CANDIDATE = {"company_name": "Fixture Forwarding", "website_url": "https://fixture-freight.test",
@@ -545,3 +548,97 @@ def test_export_schema_manifest_and_source_trace_do_not_leak_suppressed_values()
         assert any(source["field"] == "lead_score" for source in sources)
         assert any(source["field"] == "priority_score" for source in sources)
         assert all(forbidden not in archive.read(name).decode("utf-8-sig") for name in archive.namelist())
+
+
+# --- b2b-policy-3：text_list 短语匹配 ---------------------------------------
+
+PHRASE_NOW = "2026-10-20T01:00:00Z"
+PHRASE_NAME = "Patio Works LLC"
+
+
+def _phrase_spec(operator, value, field="offering.products"):
+    return {
+        "spec_version": 2,
+        "name": "户外家具短语客群",
+        "industry": "outdoor furniture",
+        "countries": ["US"],
+        "quantity": 50,
+        "paid_sources": False,
+        "budget": 0,
+        "qualification_policy": {
+            "country_scope": "operating",
+            "required_all": [{"id": "product", "field": field, "operator": operator, "value": value}],
+            "exclude_any": [],
+            "contact_policy": {"mode": "any",
+                               "allowed_types": ["business_email", "business_phone", "contact_form"],
+                               "named_person_required": False},
+        },
+        "evidence_policy": {"freshness_days": 180},
+        "execution_policy": {"company_workers": 2, "native_inflight": 2,
+                             "snapshot_every_new_qualified": 10, "snapshot_interval_seconds": 900},
+    }
+
+
+def _phrase_candidate(product):
+    source = "https://patio-works.example.com/about"
+    excerpt = f"{PHRASE_NAME} lists {product} for sale across Texas."
+    return {"company_name": PHRASE_NAME, "country_code": "US",
+            "source_url": source, "source_type": "official_site", "retrieved_at": PHRASE_NOW,
+            "offering_products": [product],
+            "sources": [{"field": "offering.products", "value": product, "source_url": source,
+                         "source_type": "official_site", "retrieved_at": PHRASE_NOW,
+                         "source_excerpt": excerpt}]}
+
+
+def _phrase_status(operator, wanted, product):
+    assessment = assess_policy(_phrase_candidate(product), [], _phrase_spec(operator, wanted))
+    return assessment["conditions"][0]["status"], assessment["decision"]
+
+
+def test_phrase_present_uses_word_boundaries_case_and_negation():
+    assert phrase_present("patio furniture", "patio") is True
+    assert phrase_present("Patio Furniture", "PATIO") is True
+    assert phrase_present("outdoor patio furniture", "patio furniture") is True
+    assert phrase_present("patios", "patio") is False
+    assert phrase_present("patiofurniture", "patio") is False
+    assert phrase_present("not patio", "patio") is False
+    # 与既有字面否定语法一致：not/never/no longer 后可隔一个提供类动词。
+    assert phrase_present("we do not offer patio furniture", "patio") is False
+    assert phrase_present("no longer manufactures patio furniture", "patio") is False
+    assert phrase_present("patio", "") is False
+
+
+def test_contains_any_phrase_hits_a_phrase_value_and_keeps_old_operators_exact():
+    assert _phrase_status("contains_any_phrase", ["patio"], "patio furniture") == ("pass", "qualified")
+    assert _phrase_status("contains_any_phrase", ["patio"], "patios") == ("fail", "excluded")
+    assert _phrase_status("contains_any_phrase", ["patio"], "not patio") == ("fail", "excluded")
+    # 旧算子仍是集合或整值精确比较：patio 不等于 patio furniture。
+    assert _phrase_status("includes_any", ["patio"], "patio furniture") == ("fail", "excluded")
+    assert _phrase_status("includes_any", ["patio furniture"], "patio furniture")[0] == "pass"
+    assert _phrase_status("includes", "patio furniture", "patio furniture")[0] == "pass"
+
+
+def test_phrase_operator_is_registered_only_for_text_list_fields():
+    envelope = capabilities()
+    assert envelope["operators"]["contains_any_phrase"]["types"] == ["text_list"]
+    for field in ("offering.products", "offering.services", "business.type", "customer.industries"):
+        assert "contains_any_phrase" in envelope["fields"][field]["operators"]
+    for field in ("business.models", "entity.country_code", "entity.region"):
+        assert "contains_any_phrase" not in envelope["fields"][field]["operators"]
+    accepted, version = parse_segment(_phrase_spec("contains_any_phrase", ["patio"]))
+    product = next(item for item in accepted["qualification_policy"]["required_all"]
+                   if item["id"] == "product")
+    assert version == 2 and product["operator"] == "contains_any_phrase"
+    rejected = _phrase_spec("contains_any_phrase", ["patio"], field="business.models")
+    with pytest.raises(Exception) as exc:
+        parse_segment(rejected)
+    assert getattr(exc.value, "code", "") == "UNSUPPORTED_CONDITION"
+
+
+def test_rule_version_advances_and_stored_runs_keep_their_frozen_label():
+    assert RULE_VERSION == "b2b-policy-3"
+    assert capabilities()["rule_version"] == "b2b-policy-3"
+    spec = _phrase_spec("contains_any_phrase", ["patio"])
+    assert policy_summary(spec)["rule_version"] == "b2b-policy-3"
+    assert policy_summary(spec, "b2b-policy-2")["rule_version"] == "b2b-policy-2"
+

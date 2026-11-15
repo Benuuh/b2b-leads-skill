@@ -46,6 +46,11 @@ RELATIONSHIP_WORDS = {
     'unknown': (),
 }
 MODEL_LOOKUP = {synonym.casefold(): name for name, words in BUSINESS_MODELS.items() for synonym in words}
+# A term directly negated in an observation never supports a positive fact.
+_NEGATION_BEFORE = re.compile(
+    r'\b(?:not|never|no\s+longer)\s+'
+    r'(?:(?:a|an|the|provide|provides|offer|offers|manufacture|manufactures|produce|produces)\s+){0,3}$',
+    re.I)
 
 
 def _country_names(code):
@@ -97,7 +102,7 @@ def _supported(field, value, excerpt):
             if not target:
                 continue
             before = text[max(0, target.start() - 100):target.start()]
-            if re.search(r'\b(?:not|never|no\s+longer)\s+(?:(?:a|an|the|provide|provides|offer|offers|manufacture|manufactures|produce|produces)\s+){0,3}$', before, re.I):
+            if _NEGATION_BEFORE.search(before):
                 return False
             if re.search(r'\bsoftware\b[^.;]{0,45}\b(?:to|for)\b[^.;]{0,35}$', before, re.I):
                 return False
@@ -226,7 +231,28 @@ def _range_status(condition, facts):
             'reason': '规模在区间内' if matched else '规模不符'}
 
 
+def phrase_present(text, phrase):
+    """Word-boundary, case-insensitive phrase containment.
+
+    ``includes_any`` compares whole values; a directory that lists
+    ``patio furniture`` must still answer the phrase condition ``patio``.
+    A directly negated mention (``not patio``) is never a hit, and ``patios``
+    is a different word, not a substring match.
+    """
+    text, phrase = str(text or ''), str(phrase or '').strip()
+    if not text or not phrase:
+        return False
+    for match in re.finditer(r'(?<!\w)' + re.escape(phrase) + r'(?!\w)', text, re.I):
+        if _NEGATION_BEFORE.search(text[max(0, match.start() - 100):match.start()]):
+            continue
+        return True
+    return False
+
+
 def _matches(operator, values, wanted):
+    if operator == 'contains_any_phrase':
+        phrases = wanted if isinstance(wanted, (list, tuple)) else [wanted]
+        return any(phrase_present(value, phrase) for value in values for phrase in phrases)
     if operator in {'in', 'includes_any', 'contains_any', 'matches'}:
         return any(value in set(wanted) for value in values)
     if operator == 'not_in':
@@ -396,9 +422,15 @@ def _stable(value):
     return json.loads(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str))
 
 
-def policy_summary(spec):
+def policy_summary(spec, rule_version=None):
+    """Describe the frozen v2 policy; a stored run passes its own version.
+
+    ``rule_version`` defaults to the current rule for new confirmations.  An
+    existing run reports the version it froze in ``plan.rules_version`` so a
+    later rule bump cannot relabel its stored qualification.
+    """
     policy = (spec or {}).get('qualification_policy') or {}
-    return {'spec_version': 2, 'rule_version': RULE_VERSION,
+    return {'spec_version': 2, 'rule_version': rule_version or RULE_VERSION,
             'country_scope': policy.get('country_scope', 'operating'),
             'country_field': COUNTRY_SCOPES.get(policy.get('country_scope', 'operating')),
             'required_all': [item['id'] for item in policy.get('required_all') or []],

@@ -13,11 +13,36 @@ from app.errors import AppError
 SPEC_VERSIONS = (1, 2)
 EVIDENCE_VERSIONS = ('evidence-1', 'evidence-2')
 DEFAULT_EVIDENCE_VERSION = 'evidence-2'
-RULE_VERSION = 'b2b-policy-2'
+RULE_VERSION = 'b2b-policy-3'
 # Confirmation scope version. Bump it when a new field, rule, or fixed plan
 # default changes the summary a user has to confirm. The hash is not an audit
 # of who confirmed.
-SEGMENT_BRIEF_VERSION = 'segment-brief-2'
+SEGMENT_BRIEF_VERSION = 'segment-brief-3'
+# Confirmation-summary projection (estimate only). Versioned so every task reuses
+# the same coefficients. It is explicitly uncalibrated and must never be turned
+# into a measured cost baseline, a promise, or part of the confirmation hash.
+PROJECTION_VERSION = 'projection-2'
+PROJECTION_DEFAULT_METHOD = 'per_company'
+PROJECTION_PROFILES = {
+    'per_company': {
+        'label': '逐家官网取证',
+        'unit': 'per_company',
+        'tokens_per_company': {'low': 12000, 'high': 20000},
+        'minutes_per_company': {'low': 2.5, 'high': 4.0},
+        'note': '200 家 × 2.5–4 分钟 ≈ 8.3–13.3 小时；每家 1.2–2 万 token ≈ 240–400 万。未校准。',
+    },
+    'directory_batch': {
+        'label': '目录批量',
+        'unit': 'total',
+        'tokens_total': {'low': 600000, 'high': 1600000},
+        'minutes_total': {'low': 10, 'high': 30},
+        'note': ('以 2026-11-15 美国户外批次从确认到交付约 20 分钟的墙钟为锚点；'
+                 '60–160 万 token 是按同量级估的，未实测。'),
+    },
+}
+PROJECTION_METHODS = tuple(PROJECTION_PROFILES)
+PROJECTION_MODEL = PROJECTION_PROFILES[PROJECTION_DEFAULT_METHOD]
+PROJECTION_BASIS = '按方法给粗估；未校准，不是实测、承诺或成本基线'
 EVIDENCE_LIMITS = {
     # The ledger contract is available for new v2 runs. It is not a collector
     # and it is not a JavaScript renderer.
@@ -106,22 +131,22 @@ FIELDS = {
     },
     'business.type': {
         'label': '企业类型', 'type': 'text_list', 'single': False, 'subject': 'entity',
-        'operators': ['includes', 'includes_any'],
+        'operators': ['includes', 'includes_any', 'contains_any_phrase'],
         'evidence': 'subject_bound_text_observation', 'unknown': 'missing_fact',
     },
     'offering.products': {
         'label': '自身提供的产品', 'type': 'text_list', 'single': False, 'subject': 'entity',
-        'operators': ['includes', 'includes_any', 'provides'],
+        'operators': ['includes', 'includes_any', 'provides', 'contains_any_phrase'],
         'evidence': 'subject_bound_offering_observation', 'unknown': 'missing_fact',
     },
     'offering.services': {
         'label': '自身提供的服务', 'type': 'text_list', 'single': False, 'subject': 'entity',
-        'operators': ['includes', 'includes_any', 'provides'],
+        'operators': ['includes', 'includes_any', 'provides', 'contains_any_phrase'],
         'evidence': 'subject_bound_offering_observation', 'unknown': 'missing_fact',
     },
     'customer.industries': {
         'label': '服务的客户行业', 'type': 'text_list', 'single': False, 'subject': 'entity',
-        'operators': ['includes', 'includes_any'],
+        'operators': ['includes', 'includes_any', 'contains_any_phrase'],
         'evidence': 'subject_bound_customer_observation', 'unknown': 'missing_fact',
     },
     'size.employees': {
@@ -152,6 +177,8 @@ OPERATORS = {
     'equals': {'label': '等于', 'types': ['enum'], 'value': 'string'},
     'includes': {'label': '包含', 'types': ['enum_list', 'text_list'], 'value': 'string'},
     'includes_any': {'label': '包含任一', 'types': ['enum_list', 'text_list', 'text'], 'value': 'string_list'},
+    'contains_any_phrase': {'label': '包含任一短语（词边界、不分大小写）',
+                            'types': ['text_list'], 'value': 'string_list'},
     'provides': {'label': '自身提供', 'types': ['text_list'], 'value': 'string'},
     'within': {'label': '区间相交', 'types': ['range'], 'value': 'range'},
     'matches': {'label': '行业语义匹配', 'types': ['industry'], 'value': 'string_list'},
@@ -234,7 +261,7 @@ def normalize_condition(condition, *, path='required_all'):
         if not isinstance(value, str) or not value.strip() or len(value) > 500:
             raise _condition_error('UNSUPPORTED_CONDITION', '该运算符需要 1 至 500 字符的文本值', result)
         result['value'] = value.strip()
-    elif operator in {'includes_any', 'matches', 'contains_any', 'in', 'not_in'}:
+    elif operator in {'includes_any', 'contains_any_phrase', 'matches', 'contains_any', 'in', 'not_in'}:
         if not isinstance(value, list) or not 1 <= len(value) <= 100 \
                 or any(not isinstance(item, str) or not item.strip() or len(item) > 500 for item in value):
             raise _condition_error('UNSUPPORTED_CONDITION', '该运算符需要 1 至 100 项的非空文本列表', result)
@@ -301,6 +328,11 @@ def capabilities():
         },
         'evidence_versions': list(EVIDENCE_VERSIONS),
         'default_evidence_version': DEFAULT_EVIDENCE_VERSION,
+        'projection': {'version': PROJECTION_VERSION,
+                       'basis': PROJECTION_BASIS,
+                       'default_method': PROJECTION_DEFAULT_METHOD,
+                       'methods': list(PROJECTION_METHODS),
+                       'profiles': deepcopy(PROJECTION_PROFILES)},
         'fast_path': {'command': 'advance', 'atomic_admission': True,
                       'replay': 'original_run_chunk_and_input', 'controller_starts_per_chunk': 1,
                       'speed_profile': {'company_workers': 4, 'snapshot_every_new_qualified': 5,

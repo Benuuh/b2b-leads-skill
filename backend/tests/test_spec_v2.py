@@ -16,7 +16,7 @@ from app.schemas import parse_segment
 def test_capabilities_are_versioned_offline_and_bounded():
     result = capabilities()
     assert result['spec_versions'] == [1, 2] and result['default_spec_version'] == 2
-    assert result['segment_brief_version'] == 'segment-brief-2'
+    assert result['segment_brief_version'] == 'segment-brief-3'
     assert {'entity.country_code', 'entity.headquarters_country', 'entity.registered_country',
             'entity.relationship', 'business.models', 'offering.products', 'offering.services',
             'customer.industries'} <= set(result['fields'])
@@ -116,6 +116,18 @@ def test_creates_both_non_freight_runs_without_industry_code(clean_db, packaging
     again = runs.create('packaging-de', packaging_spec)
     assert again['id'] == first['id'] and again['spec'] == first['spec']
     assert again['spec']['qualification_policy']['required_all'][0]['id'] == 'hq'
+
+
+def test_status_reports_the_frozen_rule_version_not_the_current_one(clean_db, packaging_spec):
+    """Old v2 runs keep b2b-policy-2 after a rule bump; a new run freezes 3."""
+    from app.capabilities import RULE_VERSION
+    created = runs.create('frozen-policy', packaging_spec)
+    assert created['plan']['rules_version'] == RULE_VERSION
+    with transaction() as session:
+        run = session.get(Run, 'frozen-policy')
+        run.plan_json = {**run.plan_json, 'rules_version': 'b2b-policy-2'}
+    status = runs.status('frozen-policy')
+    assert status['policy']['rule_version'] == 'b2b-policy-2'
 
 
 def test_same_core_finishes_two_industries_with_zero_network(clean_db, packaging_spec, uae_spec,

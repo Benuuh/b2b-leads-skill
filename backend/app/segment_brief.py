@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from app.capabilities import (
     CHANNEL_TYPES, COUNTRY_SCOPES, EVIDENCE_LIMITS, FIELDS, LIMITS, OPERATORS,
+    PROJECTION_BASIS, PROJECTION_DEFAULT_METHOD, PROJECTION_PROFILES, PROJECTION_VERSION,
     RULE_VERSION, SEGMENT_BRIEF_VERSION,
 )
 from app.errors import AppError
@@ -55,6 +56,52 @@ MODE_LABELS = {
     'any': '任一允许渠道即可',
     'all': '每种允许渠道都必须具备',
 }
+# Plain-language cards for the first screen. They deliberately omit machine
+# field names, version tokens and hashes; the sections keep the audit detail.
+PLAIN_FIELD_LABELS = {
+    'entity.country_code': '经营地',
+    'entity.headquarters_country': '总部',
+    'entity.registered_country': '注册地',
+    'entity.relationship': '主体关系',
+    'entity.region': '地区',
+    'business.models': '业务模式',
+    'business.type': '企业类型',
+    'offering.products': '自身销售的产品',
+    'offering.services': '自身提供的服务',
+    'customer.industries': '服务的客户行业',
+    'size.employees': '员工规模',
+    'size.revenue': '营收规模',
+    'industry.match': '行业匹配',
+    'evidence.exclude_terms': '排除词',
+}
+PLAIN_ENUM_LABELS = {
+    'manufacturer': '制造商', 'distributor': '经销商', 'retailer': '零售商',
+    'reseller': '转售商', 'integrator': '集成商', 'service_provider': '服务商',
+    'trading_company': '贸易公司', 'logistics_provider': '物流商', 'oem': '代工',
+}
+CHANNEL_SHORT_LABELS = {
+    'business_email': '邮箱', 'business_phone': '电话', 'contact_form': '表单',
+}
+# Chinese country names for the first screen. pycountry only has English names;
+# an unmapped code still renders its English name instead of a bare code.
+COUNTRY_NAMES_ZH = {
+    'US': '美国', 'CA': '加拿大', 'MX': '墨西哥', 'BR': '巴西', 'AR': '阿根廷',
+    'CL': '智利', 'CO': '哥伦比亚', 'PE': '秘鲁',
+    'GB': '英国', 'IE': '爱尔兰', 'DE': '德国', 'FR': '法国', 'NL': '荷兰',
+    'BE': '比利时', 'LU': '卢森堡', 'IT': '意大利', 'ES': '西班牙', 'PT': '葡萄牙',
+    'CH': '瑞士', 'AT': '奥地利', 'PL': '波兰', 'CZ': '捷克', 'SK': '斯洛伐克',
+    'HU': '匈牙利', 'RO': '罗马尼亚', 'BG': '保加利亚', 'SE': '瑞典', 'NO': '挪威',
+    'DK': '丹麦', 'FI': '芬兰', 'IS': '冰岛', 'EE': '爱沙尼亚', 'LV': '拉脱维亚',
+    'LT': '立陶宛', 'TR': '土耳其', 'RU': '俄罗斯', 'UA': '乌克兰',
+    'AE': '阿联酋', 'SA': '沙特阿拉伯', 'QA': '卡塔尔', 'KW': '科威特',
+    'IL': '以色列', 'JO': '约旦', 'LB': '黎巴嫩', 'EG': '埃及', 'ZA': '南非',
+    'NG': '尼日利亚', 'KE': '肯尼亚', 'MA': '摩洛哥', 'GH': '加纳', 'ET': '埃塞俄比亚',
+    'IN': '印度', 'PK': '巴基斯坦', 'BD': '孟加拉国', 'LK': '斯里兰卡', 'NP': '尼泊尔',
+    'CN': '中国', 'HK': '中国香港', 'TW': '中国台湾', 'MO': '中国澳门', 'JP': '日本',
+    'KR': '韩国', 'SG': '新加坡', 'MY': '马来西亚', 'TH': '泰国', 'VN': '越南',
+    'ID': '印度尼西亚', 'PH': '菲律宾', 'KH': '柬埔寨', 'MM': '缅甸', 'LA': '老挝',
+    'BN': '文莱', 'AU': '澳大利亚', 'NZ': '新西兰', 'FJ': '斐济',
+}
 # Empty positive descriptions are「未指定」. Empty restrictions are「不限」
 # and must not be read as an exclusion.
 UNSPECIFIED_PATHS = {
@@ -84,6 +131,7 @@ LABELS = {
     'exclusions': '排除标识',
     'languages': '语言',
     'quantity': '目标数量',
+    'time_limit_hours': '初始时限（小时）',
     'freshness_days': '证据有效期（天）',
     'notes': '备注',
     'paid_sources': '付费来源',
@@ -129,14 +177,17 @@ def fixed_plan_values(spec, version=1):
     """Plan defaults create actually freezes. Not remembered by the caller."""
     quantity = int(spec['quantity'])
     multiplier = int(LIMITS['candidate_multiplier'])
+    hours = spec.get('time_limit_hours') if version == 2 else None
+    if hours is None:
+        hours = LIMITS['time_limit_hours']['default']
     return {
-        'time_limit_seconds': int(LIMITS['time_limit_hours']['default']) * 3600,
+        'time_limit_seconds': int(hours) * 3600,
         'candidate_multiplier': multiplier,
         'candidate_limit': quantity * multiplier,
         'page_limit_per_company': int(LIMITS['page_limit_per_company']['default']),
         'page_limit_total': int(LIMITS['page_limit_total']['default']),
-        'paid_sources': spec['paid_sources'],
-        'budget': spec['budget'],
+        'paid_sources': spec.get('paid_sources', False),
+        'budget': spec.get('budget', 0),
         'execution_mode': 'skill_research',
         'completion_goal': 'contactable',
         # v1 stays on the historical company counter and cannot open the ledger.
@@ -147,8 +198,8 @@ def fixed_plan_values(spec, version=1):
 def rule_version_for(version):
     """Version token inside the confirmation hash.
 
-    v2 freezes ``b2b-policy-2``. v1 keeps its historical qualifier and must
-    not be labeled as that condition model.
+    v2 freezes the current policy version. v1 keeps its historical qualifier
+    and must not be labeled as that condition model.
     """
     return RULE_VERSION if version == 2 else V1_RULE_VERSION
 
@@ -252,17 +303,20 @@ def historical_plan_matches(stored_plan, spec, version):
     return True
 
 
-def inspect_segment(payload):
+def inspect_segment(payload, method=PROJECTION_DEFAULT_METHOD):
     """Normalize ``payload`` and return the offline brief. Raises on invalid input."""
     if not isinstance(payload, dict):
         raise AppError('INVALID_INPUT', '客群配置必须是 JSON 对象')
+    if method not in PROJECTION_PROFILES:
+        raise AppError('UNSUPPORTED_OPTION', '估算方法只支持 per_company 或 directory_batch',
+                       details={'method': method, 'supported': sorted(PROJECTION_PROFILES)})
     normalized, version = parse_segment(payload)
     provided = _provided_paths(payload, version)
     defaults = _defaults_applied(normalized, version, provided)
     spec_hash = _hash(normalized)
     material = confirm_material(normalized, version, spec_hash)
     confirm_hash = _hash(material)
-    summary = _summary(normalized, version, material, spec_hash, confirm_hash)
+    summary = _summary(normalized, version, material, spec_hash, confirm_hash, provided, method)
     return {
         'spec': normalized,
         'spec_version': version,
@@ -343,7 +397,10 @@ def _defaults_applied(spec, version, provided):
     for path in _walk_paths(spec):
         if '[]' in path or path in provided:
             continue
-        rows.append({'path': path, 'value': _redact_value(path, _lookup(spec, path)),
+        value = _lookup(spec, path)
+        if path == 'time_limit_hours':
+            value = LIMITS['time_limit_hours']['default']
+        rows.append({'path': path, 'value': _redact_value(path, value),
                      'source': '默认值'})
     for key, value in fixed_plan_values(spec, version).items():
         rows.append({'path': 'fixed_plan.' + key, 'value': value, 'source': '固定计划默认值'})
@@ -351,10 +408,39 @@ def _defaults_applied(spec, version, provided):
     return rows
 
 
+GENERIC_TEXT_TERMS = ('outdoor', 'patio', 'garden', 'pool', 'furniture')
+
+
+def _generic_term_hints(spec, version):
+    """Warn about exact matching on one generic word; never blocks creation."""
+    if version != 2:
+        return []
+    hints = []
+    policy = spec.get('qualification_policy') or {}
+    for bucket in ('required_all', 'exclude_any'):
+        for condition in policy.get(bucket) or []:
+            if FIELDS.get(condition.get('field'), {}).get('type') != 'text_list':
+                continue
+            if condition.get('operator') not in {'includes', 'includes_any'}:
+                continue
+            value = condition.get('value')
+            values = value if isinstance(value, list) else [value]
+            if len(values) != 1:
+                continue
+            term = str(values[0]).strip().casefold()
+            if term in GENERIC_TEXT_TERMS:
+                hints.append(
+                    f"条件 {condition.get('id')} 用单泛词「{term}」做精确匹配，"
+                    f"会漏掉「{term} furniture」这类写法；建议改 contains_any_phrase "
+                    f"或换成更具体的短语。不阻塞创建。")
+    return hints
+
+
 def _pending_hints(spec, version, defaults):
     hints = []
     if version == 2 and spec['qualification_policy'].get('derived_from') == 'v1_fields':
         hints.append('资格条件由未单列的行业、国家和相关字段派生，请核对是否等于原话。')
+    hints.extend(_generic_term_hints(spec, version))
     default_paths = [item['path'] for item in defaults if not item['path'].startswith('fixed_plan.')]
     if default_paths:
         hints.append('以下生效值来自核心默认，而不是本次输入：' + '、'.join(default_paths) + '。')
@@ -371,7 +457,7 @@ def _pending_hints(spec, version, defaults):
     return hints
 
 
-def _summary(spec, version, material, spec_hash, confirm_hash):
+def _summary(spec, version, material, spec_hash, confirm_hash, provided, method):
     fields = _fields(spec, version, material)
     covered = {item['path'] for item in fields}
     missing = [path for path in _walk_paths(spec) if path not in covered]
@@ -380,6 +466,7 @@ def _summary(spec, version, material, spec_hash, confirm_hash):
                        details={'fields': missing})
     fixed = material['fixed_plan']
     text = _sections(spec, version, material, fields, spec_hash, confirm_hash)
+    projection = _projection(spec, fixed, method)
     return {
         'brief_version': BRIEF_VERSION,
         'spec_version': version,
@@ -387,6 +474,8 @@ def _summary(spec, version, material, spec_hash, confirm_hash):
         'rule_note': _rule_note(version),
         'spec_hash': spec_hash,
         'confirm_hash': confirm_hash,
+        'headline': _headline(spec, version, material, provided, method),
+        'projection': projection,
         'fields': fields,
         'sections': text,
         'global_suppression': SUPPRESSION_NOTE,
@@ -408,6 +497,243 @@ def _summary(spec, version, material, spec_hash, confirm_hash):
             'budget': fixed['budget'],
         },
     }
+
+
+def _headline(spec, version, material, provided, method):
+    """First-screen decision card derived from the same normalized spec.
+
+    It never adds or drops a condition: ``must_have`` has one line per required
+    condition. Full values, hashes and limits stay in ``sections``/``fields``.
+    """
+    fixed = material['fixed_plan']
+    quantity = f"{spec['quantity']} 家（候选上限 {fixed['candidate_limit']}）"
+    name = str(spec.get('name') or '').strip()
+    if name:
+        one_liner = name
+    else:
+        countries = '、'.join(_country_label(code) for code in spec.get('countries') or [])
+        industry = str(spec.get('industry') or '').strip()
+        one_liner = f'在 {countries} 找 {spec["quantity"]} 家 {industry} 企业'.strip()
+    if version == 2:
+        policy = spec['qualification_policy']
+        must_have = [_headline_condition(row) for row in policy.get('required_all') or []]
+        unknown = '拿不准的进待核，不硬判不符合'
+        exclusions = _headline_exclusions(policy.get('exclude_any') or [])
+        channels = _headline_channels(policy.get('contact_policy') or {})
+    else:
+        must_have = _headline_v1_conditions(spec)
+        unknown = '证据不足保持不确定，不硬判不符合'
+        exclusions = _headline_v1_exclusions(spec)
+        channels = '公开商务渠道；v1 没有 any/all 渠道模型'
+    if not must_have:
+        must_have = ['不限（未设置硬条件）']
+    budget = (f"累计 {fixed['time_limit_seconds'] // 3600} 小时、单企业最多 "
+              f"{fixed['page_limit_per_company']} 页、" +
+              ('零付费' if not fixed['paid_sources'] else f"付费预算 {fixed['budget']}"))
+    projection = _projection(spec, fixed, method)
+    headline = {
+        'one_liner': one_liner,
+        'must_have': must_have,
+        'unknown': unknown,
+        'exclusions': exclusions,
+        'quantity': quantity,
+        'channels': channels,
+        'budget': budget,
+        'estimate': _estimate_text(projection),
+        'limits': [
+            '国家按字面匹配，未命中不等于不是目标国家',
+            '无 JS 渲染，抓不到不等于没有这家公司',
+        ],
+        'confirm_prompt': '回复「确认」开跑；要改哪条直接说。',
+    }
+    if version == 1:
+        # A v1 card had no field provenance; label each line's source instead of
+        # silently mixing defaults with user text.
+        headline['field_sources'] = _v1_field_sources(spec, provided)
+    headline['card'] = _headline_card(headline)
+    return headline
+
+
+def _projection(spec, fixed, method):
+    """Rough time/token planning range for one estimation method."""
+    profile = PROJECTION_PROFILES[method]
+    quantity = int(spec['quantity'])
+    if profile['unit'] == 'per_company':
+        minutes = profile['minutes_per_company']
+        tokens = profile['tokens_per_company']
+        low_hours = quantity * minutes['low'] / 60
+        high_hours = quantity * minutes['high'] / 60
+        token_low, token_high = quantity * tokens['low'], quantity * tokens['high']
+    else:
+        minutes = profile['minutes_total']
+        tokens = profile['tokens_total']
+        low_hours, high_hours = minutes['low'] / 60, minutes['high'] / 60
+        token_low, token_high = tokens['low'], tokens['high']
+    return {
+        'version': PROJECTION_VERSION,
+        'method': method,
+        'method_label': profile['label'],
+        'basis': 'heuristic_uncalibrated',
+        'basis_note': PROJECTION_BASIS,
+        'companies': quantity,
+        'candidates': fixed['candidate_limit'],
+        'tokens': {'low': token_low, 'high': token_high},
+        'time_hours': {'low': round(low_hours, 1), 'high': round(high_hours, 1)},
+        'time_minutes': {'low': round(low_hours * 60), 'high': round(high_hours * 60)},
+        'note': profile['note'],
+        'uncalibrated': True,
+    }
+
+
+def estimate(spec, version=2, method=PROJECTION_DEFAULT_METHOD):
+    """Public projection helper (reports); same coefficients as ``brief``."""
+    return _projection(spec, fixed_plan_values(spec, version), method)
+
+
+def _card_lines(headline):
+    lines = ['目标：' + headline['one_liner'], '硬条件（全部满足）：']
+    lines += [f'{index}. {item}' for index, item in enumerate(headline['must_have'], 1)]
+    lines.append(headline['unknown'] + '。' + headline['exclusions'])
+    lines.append('数量：' + headline['quantity'] + '；联系：' + headline['channels'])
+    lines.append('预算：' + headline['budget'])
+    lines.append('预计：' + headline['estimate'])
+    lines.append('限制：' + '；'.join(headline['limits']))
+    lines.append(headline['confirm_prompt'])
+    return lines
+
+
+CARD_BUDGET = {'lines': 13, 'characters': 450}
+CARD_RESERVE = {'lines': 2, 'characters': 80}
+
+
+def _headline_card(headline):
+    """Hard guard for the first screen: 13 lines / 450 characters.
+
+    The Skill appends the appendix path and one source line, so the guard keeps
+    room for them. The limits line repeats in ``sections`` and is dropped first;
+    conditions are never trimmed.
+    """
+    def measure(items):
+        return len(items), sum(len(item) for item in items)
+
+    def fits(items):
+        count, characters = measure(items)
+        return (count + CARD_RESERVE['lines'] <= CARD_BUDGET['lines']
+                and characters + CARD_RESERVE['characters'] <= CARD_BUDGET['characters'])
+
+    lines = _card_lines(headline)
+    if fits(lines):
+        count, characters = measure(lines)
+        return {'lines': lines, 'line_count': count, 'characters': characters,
+                'within_budget': True, 'budget': dict(CARD_BUDGET),
+                'reserve': dict(CARD_RESERVE), 'dropped': [], 'overflow_note': None}
+    trimmed = [line for line in lines if not line.startswith('限制：')]
+    if fits(trimmed):
+        count, characters = measure(trimmed)
+        return {'lines': trimmed, 'line_count': count, 'characters': characters,
+                'within_budget': True, 'budget': dict(CARD_BUDGET),
+                'reserve': dict(CARD_RESERVE), 'dropped': ['限制'],
+                'overflow_note': '首屏省略限制行，全文见附录或 sections。'}
+    count, characters = measure(lines)
+    return {'lines': lines, 'line_count': count, 'characters': characters,
+            'within_budget': False, 'budget': dict(CARD_BUDGET),
+            'reserve': dict(CARD_RESERVE), 'dropped': [],
+            'overflow_note': '首屏超出 13 行/450 字，硬条件未删减；完整口径见附录文件。'}
+
+
+V1_HEADLINE_SOURCES = (
+    ('industry', '行业'), ('countries', '国家'), ('company_types', '企业类型'),
+    ('employee_range', '员工规模'), ('revenue_range', '营收规模'),
+    ('regions', '地区'), ('keywords', '关键词'),
+)
+
+
+def _v1_field_sources(spec, provided):
+    rows = []
+    for path, label in V1_HEADLINE_SOURCES:
+        if spec.get(path) in (None, '', []):
+            continue
+        rows.append({'path': path, 'label': label,
+                     'source': '用户填写' if path in provided else '默认值'})
+    return rows
+
+
+def _wan(value):
+    if value >= 10000:
+        return f'{value / 10000:.0f} 万'
+    return str(value)
+
+
+def _estimate_text(projection):
+    hours = projection['time_hours']
+    minutes = projection['time_minutes']
+    tokens = projection['tokens']
+    if hours['high'] < 1:
+        span = f"约 {int(minutes['low'])}–{int(minutes['high'])} 分钟"
+    else:
+        span = f"约 {hours['low']:.0f}–{hours['high']:.0f} 小时"
+    return (f"按{projection['method_label']}估：{span}、约 "
+            f"{_wan(tokens['low'])}–{_wan(tokens['high'])} tokens（粗估，未校准）")
+
+
+def _headline_condition(condition):
+    field = condition.get('field')
+    value = condition.get('value')
+    label = PLAIN_FIELD_LABELS.get(field) or FIELDS.get(field, {}).get('label', str(field))
+    if field in ('entity.country_code', 'entity.headquarters_country', 'entity.registered_country'):
+        codes = value if isinstance(value, list) else [value]
+        return f"{label}：{'、'.join(_country_label(code) for code in codes)}"
+    if field == 'business.models':
+        models = value if isinstance(value, list) else [value]
+        return '业务模式：' + '、'.join(PLAIN_ENUM_LABELS.get(model, str(model)) for model in models)
+    if isinstance(value, list):
+        return f"{label}：{'、'.join(str(item) for item in value)}"
+    return f'{label}：{value}'
+
+
+def _headline_exclusions(rows):
+    if not rows:
+        return '没有写入排除条件；没提到不等于排除'
+    return '排除（任一命中即排除）：' + '；'.join(_headline_condition(row) for row in rows)
+
+
+def _headline_v1_exclusions(spec):
+    keywords = spec.get('exclude_keywords') or []
+    if not keywords:
+        return '没有写入排除词；没提到不等于排除'
+    return '排除词：' + '、'.join(str(item) for item in keywords)
+
+
+def _headline_channels(policy):
+    mode = policy.get('mode', 'any')
+    names = [CHANNEL_SHORT_LABELS.get(item, str(item))
+             for item in policy.get('allowed_types') or []]
+    text = '公开商务' + '、'.join(names)
+    text += '，任一即可' if mode == 'any' else '，每类都必须有'
+    if policy.get('named_person_required'):
+        roles = policy.get('required_roles') or []
+        text += '；需要具名联系人' + (f"（{'、'.join(str(role) for role in roles)}）" if roles else '')
+    return text
+
+
+def _headline_v1_conditions(spec):
+    rows = []
+    if spec.get('industry'):
+        rows.append(f"行业：{spec['industry']}")
+    countries = spec.get('countries') or []
+    if countries:
+        rows.append('国家：' + '、'.join(_country_label(code) for code in countries))
+    if spec.get('company_types'):
+        rows.append('企业类型：' + '、'.join(str(item) for item in spec['company_types']))
+    if spec.get('employee_range'):
+        rows.append(f"员工规模：{spec['employee_range']}")
+    if spec.get('revenue_range'):
+        rows.append(f"营收规模：{spec['revenue_range']}")
+    if spec.get('regions'):
+        rows.append('地区：' + '、'.join(str(item) for item in spec['regions']))
+    if spec.get('keywords'):
+        rows.append('关键词：' + '、'.join(str(item) for item in spec['keywords']))
+    return rows
 
 
 def _rule_note(version):
@@ -462,6 +788,11 @@ def _field_display(spec, path):
         return f"{value['count']} 项，列表哈希 {value['sha256']}。不展示具体企业、联系人、邮箱或电话。"
     if path == 'countries':
         return '、'.join(_country_label(code) for code in spec.get('countries') or [])
+    if path == 'time_limit_hours':
+        value = _lookup(spec, path)
+        if value in (None, ''):
+            return f"未指定（按默认 {LIMITS['time_limit_hours']['default']} 小时创建）"
+        return f'{value} 小时。创建时冻结为初始累计非暂停时限。'
     if path == 'paid_sources':
         return '不使用付费来源' if spec.get('paid_sources') is False else str(spec.get('paid_sources'))
     if path == 'budget':
@@ -588,7 +919,7 @@ def _sections(spec, version, material, fields, spec_hash, confirm_hash):
         ])
     else:
         channels.append(line('roles') + '。v1 没有 any/all 渠道模型；岗位列表为空表示不限。')
-    budget = [
+    budget = ([line('time_limit_hours')] if version == 2 else []) + [
         line('fixed_plan.time_limit_seconds'),
         line('fixed_plan.candidate_multiplier'),
         line('fixed_plan.candidate_limit'),
@@ -721,7 +1052,10 @@ def _redact_value(path, value):
 
 
 def _country_label(code):
-    import pycountry
-    record = pycountry.countries.get(alpha_2=str(code or ''))
-    name = record.name if record is not None else '未知名称'
+    code = str(code or '').upper()
+    name = COUNTRY_NAMES_ZH.get(code)
+    if not name:
+        import pycountry
+        record = pycountry.countries.get(alpha_2=code)
+        name = record.name if record is not None else '未知名称'
     return f'{code}（{name}）'

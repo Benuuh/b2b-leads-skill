@@ -335,6 +335,11 @@ def _view(session, run, context=None, research=None):
     stored_brief = (run.plan_json or {}).get('segment_brief')
     if isinstance(stored_brief, dict) and stored_brief.get('confirm_hash'):
         segment_brief = deepcopy(stored_brief)
+        from app.segment_brief import BRIEF_VERSION
+        recorded = stored_brief.get('brief_version')
+        if recorded and recorded != BRIEF_VERSION:
+            segment_brief['note'] = (f'由 {recorded} 生成；当前确认范围是 {BRIEF_VERSION}，'
+                                     '旧确认记录保留不改写。')
     else:
         segment_brief = {'recorded': False, 'message': '历史批次，无确认记录'}
     initial = (run.plan_json or {}).get('initial_limits') or {}
@@ -356,7 +361,7 @@ def _view(session, run, context=None, research=None):
         created_at=_iso(run.created_at), updated_at=_iso(run.updated_at), finished_at=_iso(run.finished_at))
     if version == 2:
         from app.rules.policy import policy_summary
-        result['policy'] = policy_summary(run.spec_json)
+        result['policy'] = policy_summary(run.spec_json, (run.plan_json or {}).get('rules_version'))
         result['evidence_policy'] = deepcopy(run.spec_json.get('evidence_policy'))
         result['execution_policy'] = deepcopy(run.spec_json.get('execution_policy'))
     if (run.plan_json or {}).get('page_budget_contract') == 'shared-page-budget-1':

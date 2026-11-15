@@ -201,16 +201,23 @@ def export(run_id, format='xlsx', export_key=None, filters=None, channels=None):
             raise AppError('DEMO_EXPORT_BLOCKED', '演示数据不能正式导出', 409)
         if not records:
             raise AppError('EXPORT_EMPTY', '批次暂无可导出企业', 409)
+        research_summary = projection_context.summary(False)
         manifest = dict(batch_id=run.id, run_id=run.id, segment_hash=run.spec_hash,
             source_strategy=run.plan_json, generated_at=_iso(now), tool_version=f'skill-v{CORE_VERSION}',
             runtime_release=release_identity(), research_release=run.plan_json.get('release'),
             freshness_days=freshness, budget=0, cost=0,
             spec_version=version, metrics_version=METRICS_VERSION,
-            research_summary=projection_context.summary(False))
+            research_summary=research_summary)
         if version == 2:
             from app.rules.policy import policy_summary
-            manifest['policy'] = policy_summary(run.spec_json)
+            manifest['policy'] = policy_summary(run.spec_json, (run.plan_json or {}).get('rules_version'))
             manifest['evidence_policy'] = deepcopy(run.spec_json.get('evidence_policy'))
+        from .report import build_report, publish
+        run_report = build_report(run.id, status=run.status, spec=run.spec_json,
+                                  plan=run.plan_json, research=research_summary,
+                                  stats=run.stats_json or {}, started_at=run.created_at,
+                                  finished_at=run.finished_at, exported=len(projection), now=now)
+        manifest['run_report'] = run_report
         data, filename, media_type, manifest = build_export(records, manifest, format=format,
             mode='balanced', language='zh', suppressions=suppressed,
             now=now, delivery_only=True, delivery_limit=run.spec_json['quantity'],
@@ -228,6 +235,11 @@ def export(run_id, format='xlsx', export_key=None, filters=None, channels=None):
             expires_at=now + timedelta(days=int(os.getenv('B2B_EXPORT_RETENTION_DAYS', '30'))))
         session.add(row)
         session.flush()
+        # Plain-file copy beside the exports; the manifest above already carries it.
+        try:
+            publish(run_report)
+        except OSError:
+            pass
         result = _export_view(row, projection_context.summary(False))
         operation.result_json = {'export_id': row.id}
         _audit(session, run.id, 'export.created', export_id=row.id)

@@ -149,6 +149,9 @@ class ExecutionPolicy(Strict):
 
 class SegmentSpecV2(SegmentSpec):
     spec_version: Literal[2]
+    # Initial cumulative research limit confirmed in this spec. Omitted keeps
+    # the historical 8-hour default; create freezes whichever value is in force.
+    time_limit_hours: int | None = Field(default=None, ge=1, le=72)
     qualification_policy: QualificationPolicy | None = None
     evidence_policy: EvidencePolicy | None = None
     execution_policy: ExecutionPolicy | None = None

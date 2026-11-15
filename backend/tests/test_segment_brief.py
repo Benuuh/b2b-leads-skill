@@ -4,6 +4,7 @@ These checks run against the isolated PostgreSQL fixture. A skip is not acceptan
 """
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from app import cli, runs
+from app.capabilities import RULE_VERSION
 from app.config import ROOT
 from app.errors import AppError
 from app.persistence import transaction, utcnow
@@ -72,7 +74,7 @@ def test_unversioned_new_spec_freezes_as_v2(clean_db):
     assert created['spec_version'] == 2
     assert created['spec'] == prepared['spec']
     assert created['plan']['spec_version'] == 2
-    assert created['plan']['rules_version'] == 'b2b-policy-2'
+    assert created['plan']['rules_version'] == RULE_VERSION
     assert created['plan']['initial_limits']['time_limit_seconds'] == 28800
     assert created['plan']['initial_limits']['candidate_limit'] == 150
     assert created['plan']['research']['candidate_limit'] == created['spec']['quantity'] * 3
@@ -84,6 +86,94 @@ def test_unversioned_new_spec_freezes_as_v2(clean_db):
         assert stored.spec_json['spec_version'] == 2
         assert stored.spec_hash == prepared['spec_hash']
         assert 'segment_brief' in stored.plan_json
+
+
+def test_time_limit_hours_reaches_brief_hash_and_the_frozen_plan(clean_db):
+    raw = _new_spec(time_limit_hours=12)
+    prepared = inspect_segment(raw)
+    summary = prepared['confirmation_summary']
+    assert summary['effective_budget']['time_limit_seconds'] == 43200
+    assert summary['effective_budget']['time_limit_hours'] == 12
+    assert '12 小时' in summary['headline']['budget']
+    assert any(item['path'] == 'time_limit_hours' and item['value'] == 12
+               for item in summary['fields'])
+    defaulted = inspect_segment(_new_spec())
+    assert defaulted['confirmation_summary']['effective_budget']['time_limit_seconds'] == 28800
+    assert any(item['path'] == 'time_limit_hours' and item['value'] == 8
+               for item in defaulted['defaults_applied'])
+    assert prepared['confirm_hash'] != defaulted['confirm_hash']
+    created = runs.create('twelve-hours', raw, confirm_hash=prepared['confirm_hash'])
+    assert created['plan']['initial_limits']['time_limit_seconds'] == 43200
+    assert created['time_limits']['initial_seconds'] == 43200
+
+
+@pytest.mark.parametrize('hours', [0, 73, -1])
+def test_time_limit_hours_is_bounded(hours):
+    with pytest.raises(ValidationError):
+        inspect_segment(_new_spec(time_limit_hours=hours))
+
+
+def test_v1_documents_reject_the_v2_time_limit_field():
+    payload = _v1_spec()
+    payload['time_limit_hours'] = 12
+    with pytest.raises(ValidationError):
+        inspect_segment(payload)
+
+
+def test_status_labels_a_run_confirmed_by_an_older_brief(clean_db):
+    prepared = inspect_segment(_new_spec())
+    runs.create('old-brief', _new_spec(), confirm_hash=prepared['confirm_hash'])
+    with transaction() as session:
+        run = session.get(Run, 'old-brief')
+        run.plan_json = {**run.plan_json, 'segment_brief': {
+            **run.plan_json['segment_brief'], 'brief_version': 'segment-brief-2'}}
+    status = runs.status('old-brief')
+    assert status['segment_brief']['brief_version'] == 'segment-brief-2'
+    assert '由 segment-brief-2 生成' in status['segment_brief']['note']
+    assert 'segment-brief-3' in status['segment_brief']['note']
+
+
+def test_headline_card_guard_drops_limits_before_conditions(clean_db):
+    payload = _new_spec()
+    payload['qualification_policy'] = {'required_all': [
+        {'id': f'p{index}', 'field': 'offering.products', 'operator': 'includes_any',
+         'value': [f'product phrase number {index}']} for index in range(24)]}
+    headline = inspect_segment(payload)['confirmation_summary']['headline']
+    card = headline['card']
+    assert len(headline['must_have']) == 25  # 24 products + the derived country line
+    assert len(card['lines']) == card['line_count']
+    assert card['within_budget'] is False
+    assert card['dropped'] == []
+    assert '超出' in card['overflow_note']
+    # Conditions are never trimmed by the guard.
+    assert sum(line.split('.', 1)[0].isdigit() for line in card['lines']) == 25
+    assert any('product phrase number 23' in line for line in card['lines'])
+
+
+def test_brief_cli_method_default_and_markdown_output(tmp_path):
+    from app import cli
+    args = cli.parser().parse_args(['brief', '--spec-json', 'spec.json'])
+    assert args.method == 'per_company' and args.out_md is None
+    prepared = inspect_segment(_folding_spec(), method='directory_batch')
+    path = tmp_path / 'brief.md'
+    cli._write_brief_markdown(path, prepared)
+    text = path.read_text(encoding='utf-8')
+    assert '按目录批量估' in text
+    assert '## 哈希' in text and '确认范围哈希' in text
+    assert prepared['confirm_hash'] in text
+
+
+def test_generic_single_word_conditions_are_flagged_without_blocking(clean_db):
+    payload = _new_spec()
+    payload['qualification_policy'] = {'required_all': [
+        {'id': 'patio', 'field': 'offering.products', 'operator': 'includes_any', 'value': ['patio']},
+        {'id': 'phrase', 'field': 'offering.products', 'operator': 'contains_any_phrase',
+         'value': ['folding chairs']}]}
+    prepared = inspect_segment(payload)
+    assert any('单泛词「patio」' in hint for hint in prepared['pending_hints'])
+    assert any('contains_any_phrase' in hint for hint in prepared['pending_hints'])
+    assert prepared['confirm_hash']
+    assert not any('单泛词「folding chairs」' in hint for hint in prepared['pending_hints'])
 
 
 def test_explicit_v1_still_freezes_the_historical_shape(clean_db):
@@ -419,3 +509,111 @@ def test_resume_export_and_live_do_not_require_confirmation(clean_db, monkeypatc
     for name in ('advance', 'export', 'extend-research', 'status', 'append', 'process'):
         assert '--confirm-hash' not in subparsers.choices[name].format_help()
     assert '--confirm-hash' in subparsers.choices['create'].format_help()
+
+
+def _folding_spec():
+    return {
+        'name': '美国采购户外折叠椅的经销与零售企业',
+        'industry': 'outdoor furniture',
+        'countries': ['US'],
+        'quantity': 200,
+        'qualification_policy': {
+            'country_scope': 'operating',
+            'required_all': [
+                {'id': 'us', 'field': 'entity.country_code', 'operator': 'in', 'value': ['US']},
+                {'id': 'reseller', 'field': 'business.models', 'operator': 'includes_any',
+                 'value': ['distributor', 'retailer', 'reseller', 'trading_company']},
+                {'id': 'product', 'field': 'offering.products', 'operator': 'includes_any',
+                 'value': ['outdoor furniture', 'patio furniture', 'folding chairs',
+                           'camping chairs', 'outdoor chairs']},
+            ],
+        },
+        'execution_policy': {'company_workers': 4, 'native_inflight': 2,
+                             'snapshot_every_new_qualified': 5, 'snapshot_interval_seconds': 300},
+    }
+
+
+def _headline_lines(headline):
+    """The card the Skill renders, including its appendix and source lines."""
+    return list(headline['card']['lines']) + [
+        '完整口径与哈希：.runtime/b2b-leads/brief-7472a703.json',
+        '推断：你说「采购」，我按经销/零售/转售/贸易理解',
+    ]
+
+
+def test_headline_is_a_short_decision_card(clean_db):
+    prepared = inspect_segment(_folding_spec())
+    summary = prepared['confirmation_summary']
+    headline = summary['headline']
+    assert headline['one_liner'] == '美国采购户外折叠椅的经销与零售企业'
+    assert len(headline['must_have']) == 3
+    assert headline['must_have'][0] == '经营地：US（美国）'
+    assert '经销商' in headline['must_have'][1] and '贸易公司' in headline['must_have'][1]
+    assert 'folding chairs' in headline['must_have'][2]
+    assert '没有写入排除条件' in headline['exclusions']
+    assert headline['quantity'] == '200 家（候选上限 600）'
+    assert '任一即可' in headline['channels']
+    assert headline['budget'].startswith('累计 8 小时')
+    assert headline['estimate'].startswith('按逐家官网取证估：')
+    assert 'tokens（粗估，未校准）' in headline['estimate']
+    projection = summary['projection']
+    assert projection['version'] == 'projection-2'
+    assert projection['method'] == 'per_company'
+    assert projection['method_label'] == '逐家官网取证'
+    assert projection['basis'] == 'heuristic_uncalibrated'
+    assert projection['companies'] == 200 and projection['candidates'] == 600
+    assert projection['tokens'] == {'low': 2400000, 'high': 4000000}
+    assert projection['time_hours'] == {'low': 8.3, 'high': 13.3}
+    rendered = json.dumps(headline, ensure_ascii=False)
+    assert re.search(r'[a-z_]+\.[a-z_]+', rendered) is None
+    assert re.search(r'[0-9a-f]{40,}', rendered) is None
+    lines = _headline_lines(headline)
+    assert len(lines) <= 13
+    assert sum(len(line) for line in lines) <= 450
+    # Completeness stays in the appendix: the same brief still carries every value.
+    assert summary['fields'] and summary['sections']
+    assert inspect_segment(_folding_spec())['confirmation_summary']['headline'] == headline
+
+
+def test_estimate_methods_are_labelled_and_never_enter_the_hash(clean_db):
+    per = inspect_segment(_folding_spec(), method='per_company')
+    batch = inspect_segment(_folding_spec(), method='directory_batch')
+    per_projection = per['confirmation_summary']['projection']
+    batch_projection = batch['confirmation_summary']['projection']
+    assert '逐家官网取证' in per['confirmation_summary']['headline']['estimate']
+    assert per_projection['method'] == 'per_company'
+    assert per_projection['time_hours'] == {'low': 8.3, 'high': 13.3}
+    assert per_projection['tokens'] == {'low': 2400000, 'high': 4000000}
+    assert '目录批量' in batch['confirmation_summary']['headline']['estimate']
+    assert batch_projection['method'] == 'directory_batch'
+    assert batch_projection['time_minutes'] == {'low': 10, 'high': 30}
+    assert batch_projection['tokens'] == {'low': 600000, 'high': 1600000}
+    for result in (per, batch):
+        assert '粗估，未校准' in result['confirmation_summary']['headline']['estimate']
+        assert result['confirmation_summary']['headline']['card']['within_budget'] is True
+    # The method only changes the estimate shown; the frozen configuration hash
+    # must not move, so a confirmation stays valid whichever method was shown.
+    assert per['confirm_hash'] == batch['confirm_hash']
+    assert per['spec'] == batch['spec']
+
+
+def test_projection_scales_with_quantity(clean_db):
+    small = inspect_segment(_new_spec())['confirmation_summary']['projection']
+    large = inspect_segment(_folding_spec())['confirmation_summary']['projection']
+    assert small['companies'] == 50 and large['companies'] == 200
+    assert small['tokens']['low'] < large['tokens']['low']
+    assert small['time_hours']['high'] < large['time_hours']['high']
+    assert small['candidates'] == 150 and large['candidates'] == 600
+    assert small['time_hours']['low'] < small['time_hours']['high']
+
+
+def test_v1_headline_keeps_historical_fields(clean_db):
+    prepared = inspect_segment(_v1_spec())
+    headline = prepared['confirmation_summary']['headline']
+    assert '行业：freight forwarding' in headline['must_have']
+    assert '国家：US（美国）' in headline['must_have']
+    assert headline['exclusions'] == '没有写入排除词；没提到不等于排除'
+    assert 'v1' in headline['channels']
+    assert headline['field_sources']
+    assert {item['source'] for item in headline['field_sources']} == {'用户填写'}
+    assert headline['card']['within_budget'] is True

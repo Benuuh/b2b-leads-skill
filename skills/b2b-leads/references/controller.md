@@ -5,6 +5,7 @@ Use the checkout `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (oth
 ```powershell
 .\.venv\Scripts\python.exe scripts/b2b_leads.py capabilities
 .\.venv\Scripts\python.exe scripts/b2b_leads.py brief --spec-json .runtime/b2b-leads/spec.json
+.\.venv\Scripts\python.exe scripts/b2b_leads.py brief --spec-json .runtime/b2b-leads/spec.json --method directory_batch --out-md .runtime/b2b-leads/brief.md
 .\.venv\Scripts\python.exe scripts/b2b_leads.py prepare
 .\.venv\Scripts\python.exe scripts/b2b_leads.py create --run de-packaging-20261027 --spec-json .runtime/b2b-leads/spec.json --confirm-hash <confirm_hash>
 .\.venv\Scripts\python.exe scripts/b2b_leads.py advance --run de-packaging-20261027 --chunk round-01 --input-json .runtime/b2b-leads/round-01.json --max-jobs 20 --max-seconds 60
@@ -17,6 +18,7 @@ Use the checkout `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (oth
 .\.venv\Scripts\python.exe scripts/b2b_leads.py process --run de-packaging-20261027 --resume
 .\.venv\Scripts\python.exe scripts/b2b_leads.py finish --run de-packaging-20261027
 .\.venv\Scripts\python.exe scripts/b2b_leads.py export --run de-packaging-20261027
+.\.venv\Scripts\python.exe scripts/b2b_leads.py readable-export --input data/skill-v2/<export>.xlsx --output data/skill-v2/<batch>-readable.xlsx
 .\.venv\Scripts\python.exe scripts/b2b_leads.py live --run de-packaging-20261027
 .\.venv\Scripts\python.exe scripts/b2b_leads.py live --run de-packaging-20261027 --rebuild-only
 ```
@@ -32,7 +34,7 @@ Staged evidence (offline converter, added in 2.5.0; same precheck and admission 
 
 `stage-draft` validates observed evidence, converts only supported fields and returns the submittable count plus per-candidate error codes; `advance --artifact-json` does the same conversion in-process before submitting and defaults the chunk to the content hash. Neither overrides precheck, channel or delivery rules.
 
-`capabilities`, `brief`, `validate-input` and `stage-draft` are offline: no database write, no HTTP/DNS and no implicit maintenance. `brief` returns the normalized spec, `spec_hash`, `confirmation_summary`, `confirm_hash`, `defaults_applied`, `validation` and `pending_hints`. It does not judge the market or promise a quantity or a finish time. Every other command prepares the core and invokes bounded database-backed maintenance. `create` checks `--confirm-hash` before that preparation; a missing or different hash is `SEGMENT_NOT_CONFIRMED` (409) and does not open the database. The hash shows that the submitted config matches the summary. It does not prove who confirmed. `prepare` connects to PostgreSQL, starts only the existing workspace Windows cluster if needed, creates the independent Skill database and validates its schema. There is no API, browser workbench, login or worker. `--url` has been removed. Existing legacy databases and runtime state are not upgraded or resumed; credentials are never printed.
+`capabilities`, `brief`, `validate-input`, `stage-draft` and `readable-export` are offline: no database write, no HTTP/DNS and no implicit maintenance. `readable-export` reads one existing 39-column export and writes the 15-column readable workbook plus `来源`/`说明` sheets; it never contacts the core or re-fetches evidence, and the original export stays as the evidence file. `brief` returns the normalized spec, `spec_hash`, `confirmation_summary` (with `headline` for the first screen, `projection` for the rough time/token estimate, and `fields`/`sections` for the full values and hashes), `confirm_hash`, `defaults_applied`, `validation` and `pending_hints`. `--method per_company|directory_batch` (default `per_company`) only changes the estimate shown, and `--out-md` writes the same summary as Markdown; neither changes the confirmation scope or `confirm_hash`. It does not judge the market or promise a quantity or a finish time. Every other command prepares the core and invokes bounded database-backed maintenance. `create` checks `--confirm-hash` before that preparation; a missing or different hash is `SEGMENT_NOT_CONFIRMED` (409) and does not open the database. The hash shows that the submitted config matches the summary. It does not prove who confirmed. `prepare` connects to PostgreSQL, starts only the existing workspace Windows cluster if needed, creates the independent Skill database and validates its schema. There is no API, browser workbench, login or worker. `--url` has been removed. Existing legacy databases and runtime state are not upgraded or resumed; credentials are never printed.
 
 `live` is a foreground viewing command: it writes the committed-state projection under the artifact root and serves a short-lived page bound only to `127.0.0.1` with a per-process token, printing one JSON line with the URL. It never collects, changes a run, runs maintenance from the page or exports by itself; the page's export button calls the core with the current filters. It exits on inactivity or Ctrl+C, and only `--open` opens a browser. `--rebuild-only` refreshes the saved projection without serving. Do not treat the projection file, a page refresh or the lack of a background process as proof that the run is active.
 
@@ -79,9 +81,20 @@ Write append inputs using UTF-8 JSON. `candidates` has at most 20 records. Every
 }
 ```
 
-The `.example` values above explain shape and are not real candidates. Use the actual observed email/phone value or omit the field. Formatting differences in a phone number may be normalized. A general company description cannot substantiate an added email or phone. An unconfirmed or conflicting website cannot provide official channels; a directory can still support a channel when the same page explicitly identifies the company.
+The `.example` values above explain shape and are not real candidates. Use the actual observed email/phone value or omit the field. Formatting differences in a phone number may be normalized. A general company description cannot substantiate an added email or phone. An unconfirmed or conflicting website cannot provide official channels. The core can still validate a directory-observed channel, but the default per-company protocol treats a directory row as discovery only.
+
+Default batches run `per_company`: every record names the official website and one source row per fact, with the page URL, collection time, method and a literal excerpt that starts with the company name. Qualification (country, own products/services) and channels come from the company's own About, Contact or product pages. A company without a usable official website stays `needs_review` or is dropped; do not complete it from the directory row, and do not invent an email, phone or country. Directory pages are opened natively one by one; a local script must not batch-crawl them.
 
 For an observed form use top-level `contact_form_url` and a source entry with `field:"contact_form_url"`, `value` and `source_url` set to the actual form URL, `method:"observed_contact_form"`, `source_type:"official_site"` (or `directory` when appropriate), `form_fields:["email","message"]`, a short excerpt, and `retrieved_at`. A mere link titled Contact does not establish that a form exists.
+
+Directory discovery is recorded per page in the checkpoint as a `source_ledger`; the same entries can also live in a referenced run artifact:
+
+```json
+{"source_ledger":[{"url":"https://directory.example/list/outdoor?page=3","page":3,"entries":25,
+ "relevant":11,"selected":8,"collected_at":"2026-11-15T03:20:00+00:00","failure":null}]}
+```
+
+`entries` counts rows on that page, `relevant` those matching the target, `selected` those taken forward. A failed page keeps the exact reason in `failure` and no invented counts. The ledger is descriptive evidence of discovery, not a page-budget counter.
 
 `checkpoint` is an arbitrary JSON object; no secrets. Tool counters describe calls made by the Agent, not HTTP sends. Use null when not measured and do not fill unknown counters with zero. Backend `active_wall_seconds` counts running time including Agent research; pause between sessions.
 
@@ -105,9 +118,24 @@ For an observed form use top-level `contact_form_url` and a source entry with `f
 - When the user explicitly requests research beyond the saved time limit, `extend-research --run RUN --hours 24 --operation-key KEY` raises the total cumulative active-time limit to the requested integer hours, up to 72. It only increases that limit before the existing time/candidate limit is reached and while input remains open; wait for processing to finish first. It preserves elapsed time, pause state, target quantity, candidate cap, source/page limits and paid-source budget, and records the change and executing release in the audit ledger. Retry the same hours and key after interruption. It does not reopen a finished/closed run or restart its clock.
 - Default export reuses an unchanged delivery projection and creates a fresh snapshot after progress, suppression or channel quality changes. Retrying the same named export key replays that snapshot; revoked or expired named snapshots require a new key. Use an explicit `--export-key preview` to retain a named snapshot, or a new key for another one. `--format csv` requests the existing CSV bundle. No format switch silently replaces Excel.
 - During processing a v2 run also writes incremental snapshots when `snapshot_every_new_qualified` new deliverable companies or `snapshot_interval_seconds` have passed with a changed projection. Snapshots use the same policy as the final export; status lists `stats.snapshots` and `stats.last_snapshot`. No change means no duplicate file.
+- After an export, `readable-export --input EXPORT.xlsx --output READABLE.xlsx` writes the reading copy from that workbook alone, with no database, HTTP or DNS. `名单` has 序号、评级、客户性质、企业名称、品类、州、城市、地址、官网、邮箱、电话、渠道、线索分、置信度、备注; `来源` aggregates URL、企业数、来源条数、采集时间; `说明` states the 口径、数据来源、联系方式未验证、限制、版本、实际用时/token. Rating: A=high relevance with an email whose domain matches the website; B=high relevance with only phone/form, or medium relevance with email; C=low relevance, no channel, any obviously conflicting mailbox domain, or medium relevance without email. Keep the original export unchanged beside it as the evidence file.
+- `finish` and every fresh `export` write `data/skill-v2/reports/run-<run_id>.json` and put the same object in `manifest.run_report`: `started_at`, `finished_at`, `elapsed_wall_seconds`, `active_seconds`, `paused_seconds`, `pages`, `candidates`, `admitted`, `qualified`, `contactable`, `exported`, `estimate` (method/hours/tokens, still uncalibrated) and `actual` (hours and tokens). Tokens appear only when the runtime publishes `B2B_TOKEN_USAGE_JSON` (object with `input`/`output`/`cache`/`total`/`token_scope`); otherwise `actual.tokens` is null and `token_source` is `unavailable`. Never fill tokens with the estimate. Reply with `run_report.summary_text` verbatim: `总用时 X；总 token Y` or `总 token 未取到（运行环境未提供…）`.
 - Return `file` and `report_file` as local clickable links. `summary`, `snapshot_at`, `delivery_policy` and `policy` describe the actual export snapshot, including a cached export; `current_progress` separately describes the latest batch state. Unknown observations remain null. Contactable means public, sourced, quality-eligible channels that meet the frozen channel policy; delivery/reachability has not been exercised.
 - `status` reports `discovered` (admitted enterprises, unchanged meaning), `append_ready`, `discovery_seen`, `qualified_by_origin` (live/offline evidence/supplement/reassess), field and channel `missing_items`, failure categories and versioned metrics. Tool invocations and physical HTTP attempts are separate; unknown stays null.
 - The eight-hour budget counts every nonpaused wall-clock interval, including time after a closed chat or machine failure. Pause at session boundaries; a recovered expired run must report its remaining gap rather than claiming active research lasted eight hours.
+
+## Pilot gate
+
+Before scaling to the full quantity, run the first 10–15 companies with the default `per_company` protocol and judge the pilot before deciding the rest:
+
+- `export --run RUN --export-key pilot`, then `readable-export` on that workbook.
+- Pass gate: `说明` 页的「高相关」占比 ≥ 70%，渠道覆盖 ≥ 90%，且邮箱域名冲突能逐行解释。明显属于别家公司的邮箱域名算不合格。
+- Do not start the 200-company run when the pilot fails; fix the spec, sources or per-company research first. Record the pilot counts, verdict and timestamp in the checkpoint (`checkpoint.pilot`).
+- The 12-hour limit may not fit 200 companies at the measured per-company pace; decide explicitly between extending to 16 hours (`extend-research`) and accepting a named shortfall. Do not pad the numerator.
+
+## Hourly progress report
+
+For a task estimated above 30–60 minutes, after `create` start one hourly report to `this_session` and record its `schedule_id` in the checkpoint. Template: current deliverable / qualified / pending, gap to the target, elapsed, projected remaining time at the current pace, and blockers. Do not repeat unchanged numbers; cancel the schedule when the batch finishes or is paused. A user asking for a separate report channel gets `new_once` instead of sharing this session.
 
 ## Data sources (2.6)
 

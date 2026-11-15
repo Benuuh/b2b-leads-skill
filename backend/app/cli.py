@@ -29,6 +29,9 @@ def parser():
     commands.add_parser("capabilities", help="离线读取支持的配置版本、字段、运算符与限额")
     brief = commands.add_parser("brief", help="离线生成客群确认摘要；不写库、不联网、不创建 run")
     brief.add_argument("--spec-json", required=True, type=Path)
+    brief.add_argument("--method", choices=("per_company", "directory_batch"), default="per_company",
+                       help="估算方法，默认 per_company（逐家官网取证）")
+    brief.add_argument("--out-md", type=Path, help="同时把摘要写成 Markdown 文件")
     validate = commands.add_parser("validate-input", help="离线逐条预检候选，不写库、不联网")
     validate.add_argument("--spec-json", required=True, type=Path)
     validate.add_argument("--input-json", required=True, type=Path)
@@ -38,6 +41,10 @@ def parser():
     stage.add_argument("--candidate-ids", required=True, help="逗号分隔的候选标识，最多 20 个")
     stage.add_argument("--as-of", required=True, help="带时区的对照时间")
     stage.add_argument("--out", type=Path, help="写出可提交子集 JSON")
+    readable = commands.add_parser("readable-export",
+                                   help="离线把 39 列导出转成阅读版工作簿；不连数据库、不联网")
+    readable.add_argument("--input", required=True, type=Path, help="原始 39 列导出 xlsx")
+    readable.add_argument("--output", required=True, type=Path, help="阅读版 xlsx 输出路径")
     for command in ("create", "append", "process", "status", "finish", "export", "reassess",
                     "extend-research", "supplement", "advance"):
         sub = commands.add_parser(command)
@@ -113,6 +120,21 @@ def parser():
     return result
 
 
+def _write_brief_markdown(path, prepared):
+    """Optional ``brief --out-md`` view of the same summary (no new facts)."""
+    summary = prepared['confirmation_summary']
+    card = (summary.get('headline') or {}).get('card') or {}
+    lines = ['# 客群确认摘要', '', '## 首屏', '']
+    lines += [f'- {item}' for item in card.get('lines') or []]
+    if card.get('overflow_note'):
+        lines += ['', f"> {card['overflow_note']}"]
+    for section in summary.get('sections') or []:
+        lines += ['', f"## {section['title']}", '']
+        lines += [f'- {item}' for item in section['lines']]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
 def dispatch(args):
     from app import runs
 
@@ -121,7 +143,10 @@ def dispatch(args):
         return capabilities()
     if args.command == "brief":
         from app.segment_brief import inspect_segment
-        return inspect_segment(read_json(args.spec_json))
+        result = inspect_segment(read_json(args.spec_json), method=args.method)
+        if args.out_md:
+            _write_brief_markdown(args.out_md, result)
+        return result
     if args.command == "validate-input":
         return runs.validate_input(read_json(args.spec_json), read_json(args.input_json))
     if args.command == "stage-draft":
@@ -134,6 +159,9 @@ def dispatch(args):
         return {'version': staged['version'], 'chunk_id': staged['chunk_id'],
                 'submittable': len(staged['submittable']['candidates']),
                 'errors': staged['errors'], 'out': str(args.out) if args.out else None}
+    if args.command == "readable-export":
+        from app.delivery.readable import export_readable
+        return export_readable(args.input, args.output)
     # create 的确认哈希必须在准备、维护和数据库之前完成。无效输入同样不得启动这些副作用。
     # 传入的是已经读入内存的原始 spec，避免校验通过后再读可能已变化的文件。
     # 规范化后的 v1 文档不含 spec_version，不能把那份结果再送去解析。
@@ -143,7 +171,7 @@ def dispatch(args):
         from app.segment_brief import require_confirmation
         raw_create_spec = read_json(args.spec_json)
         prepared_create = require_confirmation(raw_create_spec, args.confirm_hash)
-    # 密钥启动校验（spec 2.6 §3.5）：除 capabilities、brief 与两个纯离线命令外，
+    # 密钥启动校验（spec 2.6 §3.5）：除 capabilities、brief、readable-export 与两个纯离线命令外，
     # 任何命令在动数据库之前先确认密钥就绪；宁可起不来，不要跑一半崩。
     from app.secrets import validate_startup_secrets
     validate_startup_secrets()
