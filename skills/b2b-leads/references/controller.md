@@ -98,6 +98,12 @@ Directory discovery is recorded per page in the checkpoint as a `source_ledger`;
 
 `checkpoint` is an arbitrary JSON object; no secrets. Tool counters describe calls made by the Agent, not HTTP sends. Use null when not measured and do not fill unknown counters with zero. Backend `active_wall_seconds` counts running time including Agent research; pause between sessions.
 
+## Search and fetch gates
+
+Discovery queries combine category, country and channel words; a brand name alone is not a query, and 3–5 variants are expected per round. Snippets are discovery hints only.
+
+Before a page is used as evidence, classify it: `readable` requires a 2xx status, at least 600 characters of visible text (scripts, styles, noscript and SVG removed), and no challenge page. A challenge page is recognized by its title or a short body (`Just a moment`, `Attention Required`, `Access Denied`, `Too Many Requests`, `Enable JavaScript and cookies`, `Checking your browser`, `Verify you are human`); a bare `captcha` or `cloudflare` mention is script noise and is not a challenge by itself. An unreadable page gets one retry through the company's Contact or About page; if it stays unreadable the company is `needs_review` with reason `page_unreadable`, uncounted, and no fact or channel is recorded from it. A non-2xx fetch is a result, not proof the company lacks a channel. A cross-origin redirect is refused by the fetch tool: retry the target URL it names. Keep `{url, status, chars, readable}` per page in the checkpoint and report page/readable/empty counts at delivery.
+
 ## Precheck, recovery and delivery
 
 - Prefer `advance` for normal evidence-ready chunks: the existing atomic append precheck and a bounded process run share one controller startup and one preparation/maintenance pass. The response omits repeated full spec/plan data while retaining progress, missing items, admission, errors and snapshot references. Submit the first 5 companies, then chunks of 10–20. Invalid records reject the whole chunk; offline `validate-input` remains the tool for finding the valid subset. Invalid bounds or unsupported v1 worker settings reject before candidate admission.

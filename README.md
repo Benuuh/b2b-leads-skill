@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.9.0--internal--trial-yellow" alt="Version 2.9.0 internal trial">
+  <img src="https://img.shields.io/badge/version-2.9.2--internal--trial-yellow" alt="Version 2.9.2 internal trial">
   <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
   <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 16">
   <a href="https://github.com/Benuuh/b2b-leads-skill/actions/workflows/ci.yml"><img src="https://github.com/Benuuh/b2b-leads-skill/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -31,7 +31,7 @@
 
 **B2B Leads** 是一个本地运行的获客研究技能：Agent 负责搜索和打开公开页面，提交逐字段证据；Python 核心负责资格判断、有限官网补齐、联系方式校验、去重、抑制、预算、恢复和文件交付。
 
-当前检出的版本标记是内部试用 **2.9.0**，不是已完成生产验收，也不是正式发布的 2.9.0。RT-01 真实小批 canary、200 家 / 8 小时和独立校准均未验证。下面的 2.7.0 基准表是历史测量，不是本次试用的在线时效。
+当前检出的版本标记是内部试用 **2.9.2**，不是已完成生产验收，也不是正式发布的 2.9.2。RT-01 真实小批 canary、200 家 / 8 小时和独立校准均未验证。下面的 2.7.0 基准表是历史测量，不是本次试用的在线时效。
 
 它**不是**一个批量爬虫，也**不是**一个自动发信/写 CRM 的 SaaS。它只回答一个问题：**这家企业是否符合目标客群，并且是否有可复核的公开商务联系方式？**
 
